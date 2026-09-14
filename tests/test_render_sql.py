@@ -1,4 +1,6 @@
 import io
+import json
+import re
 import sys
 import tempfile
 import unittest
@@ -7,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+NOTEBOOK_PATH = PROJECT_DIR / "notebooks" / "credit_default_exploration.ipynb"
 sys.path.insert(0, str(PROJECT_DIR))
 
 import scripts.render_sql as render_sql_module
@@ -155,6 +158,118 @@ class RenderSqlTests(unittest.TestCase):
 
             self.assertTrue((output_dir / "bootstrap.sql").exists())
             self.assertIn("Rendered", output.getvalue())
+
+
+class WorkspaceNotebookTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.notebook = json.loads(NOTEBOOK_PATH.read_text())
+        self.cells = self.notebook["cells"]
+
+    def test_notebook_uses_nbformat_4_5(self) -> None:
+        self.assertEqual(self.notebook["nbformat"], 4)
+        self.assertGreaterEqual(self.notebook["nbformat_minor"], 5)
+
+    def test_every_cell_has_a_unique_id(self) -> None:
+        cell_ids = [cell.get("id") for cell in self.cells]
+        self.assertTrue(all(cell_ids))
+        self.assertEqual(len(cell_ids), len(set(cell_ids)))
+
+    def test_sql_cells_have_workspace_result_bindings(self) -> None:
+        sql_cell_count = 0
+        for cell in self.cells:
+            source = "".join(cell.get("source", []))
+            if not source.startswith("%%sql -r "):
+                continue
+            sql_cell_count += 1
+            variable_name = source.splitlines()[0].removeprefix("%%sql -r ").strip()
+            with self.subTest(variable=variable_name):
+                self.assertRegex(variable_name, r"^[a-z][a-z0-9_]+$")
+        self.assertGreaterEqual(sql_cell_count, 10)
+
+    def test_notebook_is_workspace_only(self) -> None:
+        notebook_text = NOTEBOOK_PATH.read_text().lower()
+        for prohibited in (
+            "connection_name",
+            "session.builder",
+            "snowflake.connector",
+            "streamlit",
+            "ipywidgets",
+            "pip install",
+        ):
+            with self.subTest(prohibited=prohibited):
+                self.assertNotIn(prohibited, notebook_text)
+
+    def test_notebook_contains_expected_analysis_sections(self) -> None:
+        markdown = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in self.cells
+            if cell["cell_type"] == "markdown"
+        )
+        for heading in (
+            "Inspect the data contract",
+            "Understand target availability",
+            "Discover candidate features",
+            "Inspect numeric distributions",
+            "Inspect categorical support",
+            "feature stability",
+            "temporal development",
+            "Establish baselines",
+            "Provisional feature decision",
+        ):
+            with self.subTest(heading=heading):
+                self.assertIn(heading, markdown)
+
+    def test_sql_cells_do_not_use_rows_as_an_alias(self) -> None:
+        for cell in self.cells:
+            source = "".join(cell.get("source", []))
+            if source.startswith("%%sql -r "):
+                self.assertIsNone(re.search(r"\bAS\s+ROWS\b", source, re.IGNORECASE))
+
+    def test_target_exploration_excludes_held_out_period(self) -> None:
+        target_analysis_variables = {
+            "monthly_target",
+            "outcome_availability",
+            "numeric_by_target",
+            "utilisation_distribution",
+            "product_outcomes",
+            "channel_outcomes",
+            "tenure_outcomes",
+            "scenario_profile",
+        }
+        for cell in self.cells:
+            source = "".join(cell.get("source", []))
+            if not source.startswith("%%sql -r "):
+                continue
+            variable_name = source.splitlines()[0].removeprefix("%%sql -r ").strip()
+            if variable_name in target_analysis_variables:
+                with self.subTest(variable=variable_name):
+                    self.assertIn("OBSERVATION_DATE < '2026-01-01'::DATE", source)
+
+    def test_held_out_split_metrics_remain_masked(self) -> None:
+        sql_by_variable = {}
+        for cell in self.cells:
+            source = "".join(cell.get("source", []))
+            if source.startswith("%%sql -r "):
+                variable_name = source.splitlines()[0].removeprefix("%%sql -r ").strip()
+                sql_by_variable[variable_name] = source
+
+        self.assertIn(
+            "IFF(SPLIT_NAME = 'HELD_OUT_TEST', NULL",
+            sql_by_variable["temporal_split_summary"],
+        )
+        self.assertIn(
+            "IFF(SPLIT_NAME = 'HELD_OUT_TEST', NULL",
+            sql_by_variable["baseline_summary"],
+        )
+
+    def test_all_sql_code_cells_use_workspace_magic(self) -> None:
+        for cell in self.cells:
+            if cell["cell_type"] != "code":
+                continue
+            source = "".join(cell.get("source", [])).lstrip()
+            looks_like_sql = bool(re.match(r"(SELECT|WITH|DESCRIBE|SHOW|USE)\b", source, re.I))
+            with self.subTest(cell_id=cell["id"]):
+                self.assertFalse(looks_like_sql)
 
 
 if __name__ == "__main__":

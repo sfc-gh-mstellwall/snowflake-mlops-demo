@@ -11,20 +11,21 @@ The repository is intentionally built in reviewable phases:
 | Phase | Scope | Status |
 |---|---|---|
 | 1 | Portable bootstrap, synthetic data, validation, inventory, teardown | Implemented, awaiting target-account execution |
-| 2 | Evidence-first interactive development notebook | Planned |
+| 2 | Evidence-first interactive development notebook | Implemented, awaiting target Workspace execution |
 | 3 | Repeatable training, Experiments, Model Registry, tests | Planned |
 | 4 | ML Job and Task Graph orchestration | Planned |
 | 5 | TEST/QA promotion gates and rollback | Planned |
 | 6 | Warehouse inference and model monitoring | Planned |
 | 7 | Retraining evaluation and optional NPO path | Planned |
 
-Later phase directories such as `notebooks/`, `src/`, and `config/` will be added after the preceding phase has been demonstrated and reviewed.
+Later phase directories such as `src/` and `config/` will be added after the preceding phase has been demonstrated and reviewed.
 
 ## Repository structure
 
 ```text
 deployment/        Snowflake bootstrap, verification, inventory, and teardown templates
 docs/              Conceptual and practical MLOps papers
+notebooks/         Snowflake Workspace notebooks for interactive development
 scripts/           Configuration validation and SQL rendering
 tests/             Renderer and destructive-name safety tests
 project.yaml       Portable names, compute, data, and model settings
@@ -102,6 +103,21 @@ Next, open and run `build/inventory.sql`. It verifies that the configured accoun
 Then open and run `build/verify_data.sql`. It verifies the generated data rather than the object inventory: row counts, temporal coverage, labels, controlled drift, operational segments, training-label finality, and key uniqueness. Continue to notebook development only when `PHASE_1_STATUS` is `PASS` and the visible population checks are reasonable.
 
 The generated `build/` directory is intentionally ignored by Git. Commit changes to configuration, templates, scripts, tests, and notebooks, not account-specific rendered SQL.
+
+## Run Phase 2
+
+After Phase 1 passes, open `notebooks/credit_default_exploration.ipynb` in the same Git-backed Workspace and connect it to the Container Runtime CPU 2.9 notebook service.
+
+Run the notebook from top to bottom. It uses native Workspace SQL cells and Snowpark cell references to:
+
+- Confirm the training data contract, grain, finality, uniqueness, and missingness.
+- Visualise pre-holdout monthly target behaviour and development-to-validation stability.
+- Discover candidate columns before assigning feature roles.
+- Compare numeric and categorical candidate behaviour.
+- Define temporal development, validation, and held-out windows.
+- Record baseline, evaluation, leakage, and provisional feature decisions for Phase 3.
+
+The notebook is Snowflake Workspace-only. It has no local connection fallback and must not be run before the Phase 1 objects exist. Phase 2 does not train or register a model.
 
 ## Teardown
 
