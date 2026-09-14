@@ -213,11 +213,11 @@ class WorkspaceNotebookTests(unittest.TestCase):
             "Inspect the data contract",
             "Understand target availability",
             "Discover candidate features",
-            "Inspect numeric distributions",
+            "Inspect ranges, tails, and redundancy",
             "Inspect categorical support",
             "feature stability",
             "temporal development",
-            "Establish baselines",
+            "monthly review capacity",
             "Provisional feature decision",
         ):
             with self.subTest(heading=heading):
@@ -229,42 +229,48 @@ class WorkspaceNotebookTests(unittest.TestCase):
             if source.startswith("%%sql -r "):
                 self.assertIsNone(re.search(r"\bAS\s+ROWS\b", source, re.IGNORECASE))
 
-    def test_target_exploration_excludes_held_out_period(self) -> None:
-        target_analysis_variables = {
-            "monthly_target",
-            "outcome_availability",
-            "numeric_by_target",
-            "utilisation_distribution",
-            "product_outcomes",
-            "channel_outcomes",
-            "tenure_outcomes",
-            "scenario_profile",
-        }
-        for cell in self.cells:
-            source = "".join(cell.get("source", []))
-            if not source.startswith("%%sql -r "):
-                continue
-            variable_name = source.splitlines()[0].removeprefix("%%sql -r ").strip()
-            if variable_name in target_analysis_variables:
-                with self.subTest(variable=variable_name):
-                    self.assertIn("OBSERVATION_DATE < '2026-01-01'::DATE", source)
+    def test_snowpark_pandas_analysis_protects_held_out_period(self) -> None:
+        notebook_text = NOTEBOOK_PATH.read_text()
+        self.assertIn('validation_cutoff = pd.Timestamp("2026-01-01")', notebook_text)
+        self.assertIn('pre_holdout = traning_base_pd[eligible_development | eligible_validation]', notebook_text)
+        self.assertNotIn('pre_holdout = traning_base_pd[traning_base_pd["OBSERVATION_DATE"] <', notebook_text)
+        self.assertIn('splits["SPLIT_NAME"] = "PURGED_OR_HELD_OUT"', notebook_text)
 
-    def test_held_out_split_metrics_remain_masked(self) -> None:
-        sql_by_variable = {}
-        for cell in self.cells:
-            source = "".join(cell.get("source", []))
-            if source.startswith("%%sql -r "):
-                variable_name = source.splitlines()[0].removeprefix("%%sql -r ").strip()
-                sql_by_variable[variable_name] = source
+    def test_notebook_contains_required_extended_eda(self) -> None:
+        notebook_text = NOTEBOOK_PATH.read_text()
+        for expected in (
+            "numeric_correlation",
+            "tail_checks",
+            "segment_support",
+            "OBSERVATION_LEVEL_CI_LOW",
+            "stability_quantiles",
+            "category_mix",
+            "period_missingness",
+            "monthly_review_capacity",
+            "review_capacity_summary",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, notebook_text)
 
-        self.assertIn(
-            "IFF(SPLIT_NAME = 'HELD_OUT_TEST', NULL",
-            sql_by_variable["temporal_split_summary"],
-        )
-        self.assertIn(
-            "IFF(SPLIT_NAME = 'HELD_OUT_TEST', NULL",
-            sql_by_variable["baseline_summary"],
-        )
+    def test_contract_checks_raise_on_failure(self) -> None:
+        notebook_text = NOTEBOOK_PATH.read_text()
+        self.assertIn("if duplicate_key_count != 0:", notebook_text)
+        self.assertIn("if non_final_label_count != 0:", notebook_text)
+        self.assertIn("if null_counts.sum() != 0:", notebook_text)
+
+    def test_notebook_avoids_known_brittle_snowpark_pandas_operations(self) -> None:
+        notebook_text = NOTEBOOK_PATH.read_text()
+        for prohibited in (
+            ".ngroups",
+            ".transform(\"sum\")",
+            ".clip(lower=",
+            ".clip(upper=",
+            "quantile([",
+            "filterwarnings",
+            ".agg(\n    lambda",
+        ):
+            with self.subTest(prohibited=prohibited):
+                self.assertNotIn(prohibited, notebook_text)
 
     def test_all_sql_code_cells_use_workspace_magic(self) -> None:
         for cell in self.cells:
