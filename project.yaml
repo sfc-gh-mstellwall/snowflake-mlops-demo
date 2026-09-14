@@ -13,6 +13,7 @@ snowflake:
     test: TEST
     prod: PROD
     control: CONTROL
+    feature_store: DEV_FEATURE_STORE
   stages:
     releases: RELEASES
     jobs: JOB_PAYLOADS
@@ -39,14 +40,3 @@ data:
   as_of_date: 2026-09-01
   outcome_window_days: 90
   drift_start_date: 2026-01-01
-
-model:
-  name: CREDIT_DEFAULT_EARLY_WARNING
-  experiment_name: CREDIT_DEFAULT_DEVELOPMENT
-  outcome_column: DEFAULT_WITHIN_90D
-  version_prefix: CANDIDATE
-  review_rate: 0.10
-  minimum_roc_auc: 0.72
-  minimum_average_precision: 0.20
-  maximum_brier_score: 0.16
-  minimum_segment_roc_auc: 0.62

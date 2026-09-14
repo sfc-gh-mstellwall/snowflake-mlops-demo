@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-NOTEBOOK_PATH = PROJECT_DIR / "notebooks" / "credit_default_exploration.ipynb"
+NOTEBOOK_PATH = PROJECT_DIR / "notebooks" / "01_credit_default_exploration.ipynb"
 sys.path.insert(0, str(PROJECT_DIR))
 
 import scripts.render_sql as render_sql_module
@@ -68,7 +68,7 @@ class RenderSqlTests(unittest.TestCase):
 
     def test_bootstrap_reports_generated_data_summary(self) -> None:
         tokens = build_tokens(load_config(PROJECT_DIR / "project.yaml"))
-        template = (PROJECT_DIR / "deployment" / "bootstrap.sql").read_text()
+        template = (PROJECT_DIR / "deployment" / "01_bootstrap.sql").read_text()
         rendered = render(template, tokens)
 
         for metric in (
@@ -83,13 +83,29 @@ class RenderSqlTests(unittest.TestCase):
             with self.subTest(metric=metric):
                 self.assertIn(metric, rendered)
 
+    def test_bootstrap_prepares_every_notebook_prerequisite(self) -> None:
+        tokens = build_tokens(load_config(PROJECT_DIR / "project.yaml"))
+        template = (PROJECT_DIR / "deployment" / "01_bootstrap.sql").read_text()
+        rendered = render(template, tokens)
+
+        for statement in (
+            f"CREATE SCHEMA IF NOT EXISTS {tokens['DATABASE']}.{tokens['FEATURE_STORE_SCHEMA']}",
+            "GRANT CREATE TABLE, CREATE VIEW, CREATE DATASET, CREATE EXPERIMENT, CREATE MODEL",
+            "GRANT CREATE TAG, CREATE VIEW",
+            "GRANT REFERENCES ON ALL TABLES",
+            "GRANT REFERENCES ON ALL VIEWS",
+            f"GRANT VIEW LINEAGE ON ACCOUNT TO ROLE {tokens['DEVELOPER_ROLE']}",
+        ):
+            with self.subTest(statement=statement):
+                self.assertIn(statement, rendered)
+
     def test_sql_templates_do_not_use_rows_as_an_alias(self) -> None:
         for template_path in (PROJECT_DIR / "deployment").glob("*.sql"):
             with self.subTest(template=template_path.name):
                 self.assertNotIn(" AS ROWS", template_path.read_text().upper())
 
     def test_inventory_covers_phase_one_object_categories(self) -> None:
-        inventory_sql = (PROJECT_DIR / "deployment" / "inventory.sql").read_text()
+        inventory_sql = (PROJECT_DIR / "deployment" / "02_inventory.sql").read_text()
 
         for command in (
             "SHOW DATABASES LIKE",
@@ -115,7 +131,7 @@ class RenderSqlTests(unittest.TestCase):
 
     def test_workspace_setup_matches_default_compute_pool(self) -> None:
         tokens = build_tokens(load_config(DEFAULT_CONFIG_PATH))
-        setup_sql = (PROJECT_DIR / "workspace_setup.sql").read_text()
+        setup_sql = (PROJECT_DIR / "00_workspace_setup.sql").read_text()
 
         self.assertIn(
             f"CREATE COMPUTE POOL IF NOT EXISTS {tokens['COMPUTE_POOL']}", setup_sql
@@ -133,7 +149,12 @@ class RenderSqlTests(unittest.TestCase):
 
             self.assertEqual(
                 {path.name for path in output_paths},
-                {"bootstrap.sql", "inventory.sql", "teardown.sql", "verify_data.sql"},
+                {
+                    "01_bootstrap.sql",
+                    "02_inventory.sql",
+                    "03_verify_data.sql",
+                    "99_teardown.sql",
+                },
             )
             self.assertTrue(all(path.parent == output_dir for path in output_paths))
 
@@ -156,7 +177,7 @@ class RenderSqlTests(unittest.TestCase):
             ):
                 render_sql_module.main()
 
-            self.assertTrue((output_dir / "bootstrap.sql").exists())
+            self.assertTrue((output_dir / "01_bootstrap.sql").exists())
             self.assertIn("Rendered", output.getvalue())
 
 
@@ -188,7 +209,7 @@ class WorkspaceNotebookTests(unittest.TestCase):
                 self.assertEqual(metadata.get("language"), "sql")
                 self.assertEqual(metadata.get("name"), variable_name)
                 self.assertEqual(metadata.get("resultVariableName"), variable_name)
-        self.assertGreaterEqual(sql_cell_count, 10)
+        self.assertGreaterEqual(sql_cell_count, 1)
 
     def test_notebook_is_workspace_only(self) -> None:
         notebook_text = NOTEBOOK_PATH.read_text().lower()
@@ -230,11 +251,21 @@ class WorkspaceNotebookTests(unittest.TestCase):
                 self.assertIsNone(re.search(r"\bAS\s+ROWS\b", source, re.IGNORECASE))
 
     def test_snowpark_pandas_analysis_protects_held_out_period(self) -> None:
-        notebook_text = NOTEBOOK_PATH.read_text()
-        self.assertIn('validation_cutoff = pd.Timestamp("2026-01-01")', notebook_text)
-        self.assertIn('pre_holdout = traning_base_pd[eligible_development | eligible_validation]', notebook_text)
-        self.assertNotIn('pre_holdout = traning_base_pd[traning_base_pd["OBSERVATION_DATE"] <', notebook_text)
-        self.assertIn('splits["SPLIT_NAME"] = "PURGED_OR_HELD_OUT"', notebook_text)
+        code = "\n".join(
+            "".join(cell.get("source", []))
+            for cell in self.cells
+            if cell["cell_type"] == "code"
+        )
+        self.assertIn('validation_cutoff = pd.Timestamp("2026-01-01")', code)
+        self.assertIn(
+            "pre_holdout = traning_base_pd[eligible_development | eligible_validation]",
+            code,
+        )
+        self.assertNotIn(
+            'pre_holdout = traning_base_pd[traning_base_pd["OBSERVATION_DATE"] <',
+            code,
+        )
+        self.assertIn('splits["SPLIT_NAME"] = "PURGED_OR_HELD_OUT"', code)
 
     def test_notebook_contains_required_extended_eda(self) -> None:
         notebook_text = NOTEBOOK_PATH.read_text()

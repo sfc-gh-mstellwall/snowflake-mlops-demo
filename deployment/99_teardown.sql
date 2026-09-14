@@ -1,5 +1,5 @@
 -- Destructive and intentionally scoped to the configured demo prefix.
--- Run inventory.sql and review its output first.
+-- Run 02_inventory.sql and review its output first.
 
 USE ROLE ACCOUNTADMIN;
 

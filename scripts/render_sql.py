@@ -56,6 +56,7 @@ def build_tokens(config: dict[str, Any]) -> dict[str, str]:
         "TEST_SCHEMA": schemas["test"],
         "PROD_SCHEMA": schemas["prod"],
         "CONTROL_SCHEMA": schemas["control"],
+        "FEATURE_STORE_SCHEMA": schemas["feature_store"],
         "RELEASE_STAGE": stages["releases"],
         "JOB_STAGE": stages["jobs"],
         "DAG_STAGE": stages["dags"],
