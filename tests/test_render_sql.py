@@ -174,7 +174,7 @@ class WorkspaceNotebookTests(unittest.TestCase):
         self.assertTrue(all(cell_ids))
         self.assertEqual(len(cell_ids), len(set(cell_ids)))
 
-    def test_sql_cells_have_workspace_result_bindings(self) -> None:
+    def test_sql_cells_have_workspace_metadata(self) -> None:
         sql_cell_count = 0
         for cell in self.cells:
             source = "".join(cell.get("source", []))
@@ -182,8 +182,12 @@ class WorkspaceNotebookTests(unittest.TestCase):
                 continue
             sql_cell_count += 1
             variable_name = source.splitlines()[0].removeprefix("%%sql -r ").strip()
+            metadata = cell.get("metadata", {})
             with self.subTest(variable=variable_name):
                 self.assertRegex(variable_name, r"^[a-z][a-z0-9_]+$")
+                self.assertEqual(metadata.get("language"), "sql")
+                self.assertEqual(metadata.get("name"), variable_name)
+                self.assertEqual(metadata.get("resultVariableName"), variable_name)
         self.assertGreaterEqual(sql_cell_count, 10)
 
     def test_notebook_is_workspace_only(self) -> None:
