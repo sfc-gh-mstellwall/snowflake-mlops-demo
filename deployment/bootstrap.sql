@@ -1,5 +1,5 @@
 -- Portable bootstrap for the synthetic credit-default MLOps demo.
--- Render with demo/scripts/render_sql.py and review before execution.
+-- Render with scripts/render_sql.py and review before execution.
 
 USE ROLE ACCOUNTADMIN;
 

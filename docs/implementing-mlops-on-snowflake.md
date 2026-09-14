@@ -44,9 +44,11 @@ The project should begin with a repository and an agreed operating boundary, rat
 | Local IDE and repository | Teams with established local tooling | Snowflake connections and runtime compatibility need standardisation |
 | Template repository and private Git-backed Workspace | Standard production-oriented development | Requires an organisation-owned template and bootstrap process |
 
-The recommended default is a **template repository, a private Git-backed Workspace for each developer, and CI/CD deployment from an approved commit**. Developers collaborate through branches and pull requests rather than by sharing one Git-backed Workspace.
+The recommended default is a **template repository, a private Git-backed Workspace for each developer, and CI/CD deployment from an approved commit**. Developers open the repository as a Workspace and perform interactive setup, exploration, testing, and script execution there. They collaborate through branches and pull requests rather than by sharing one Git-backed Workspace.
 
 This model has a deliberate automation boundary. The platform team can provision API integrations, secrets, roles, schemas, stages, warehouses, compute pools, and approved runtime environments. The organisation's Git platform can create a project repository from a template. Each developer then creates a private Git-backed Workspace through **Projects → Workspaces → From Git repository** in Snowsight. Git-backed Workspace creation is not available through `CREATE WORKSPACE`, DCM, or a CLI, and a regular Workspace cannot be created first and connected to Git later ([Git-backed Workspaces](https://docs.snowflake.com/en/user-guide/ui-snowsight/workspaces-git)).
+
+For the companion demonstration repository, the Git-backed Workspace is the interactive execution boundary. The user runs repository Python files with a Workspace notebook service, opens rendered SQL in the Workspace SQL editor, and develops notebooks alongside the same modules and deployment definitions. A local clone is optional and is not part of the demonstration procedure. Python files execute as complete scripts in Workspaces and can import other repository files by relative path ([Python files in Workspaces](https://docs.snowflake.com/en/user-guide/ui-workspaces-python)).
 
 Production deployment should not depend on a developer's private Workspace. After pull-request approval, CI/CD copies the approved repository contents to an internal or temporary stage, creates or versions an NPO from that stage, or submits the packaged Python project as an ML Job. This preserves the commit-to-release relationship ([production NPO workflow](https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks-in-workspaces/notebooks-in-workspaces-workflow-scenarios)).
 
@@ -113,7 +115,7 @@ targets:
   prod: ML_PROD.CHURN
 ```
 
-Environment files contain non-secret references such as object names, feature versions, thresholds, and compute settings. Credentials remain in Snowflake secrets or the CI platform's approved secret store. The first milestone is simple: another team member can use the same repository branch, select the approved runtime, run `scripts/run_training.py --environment dev`, and obtain the same class of outputs without editing code.
+Environment files contain non-secret references such as object names, feature versions, thresholds, and compute settings. Credentials remain in Snowflake secrets or the CI platform's approved secret store. The first milestone is simple: another team member can open the same repository branch as a private Git-backed Workspace, select the approved runtime, run `scripts/run_training.py --environment dev` from the Workspace Python editor or terminal, and obtain the same class of outputs without editing code.
 
 ### Worked bootstrap: churn-risk
 
@@ -121,7 +123,7 @@ Environment files contain non-secret references such as object names, feature ve
 2. The repository service creates the repository and applies branch protection, required reviewers, CI checks, and ownership metadata.
 3. The platform workflow provisions or assigns `ML_DEV.CHURN`, a deployment stage, warehouse, compute pool, approved CRE, and the `ML_CHURN_DEVELOPER` role. TEST and PROD access remain with deployment and production roles.
 4. The data scientist opens Snowsight and creates a private Git-backed Workspace from the repository, using the approved Git API integration and authentication method.
-5. The data scientist creates a feature branch, develops in `notebooks/churn_experiment.ipynb`, and moves reusable logic into `src/churn/`.
+5. The data scientist creates a feature branch, uses a platform-provided compute pool or runs the repository's one-time Workspace compute setup, configures a Workspace notebook service, runs repository bootstrap and validation assets, develops in `notebooks/churn_experiment.ipynb`, and moves reusable logic into `src/churn/`.
 6. A pull request runs unit tests, configuration validation, data-contract tests against DEV, dependency checks, and a small training smoke test.
 7. After approval, CI/CD identifies the merge commit as a release candidate and deploys it to TEST/QA. The production deployment later uses that same release identifier.
 

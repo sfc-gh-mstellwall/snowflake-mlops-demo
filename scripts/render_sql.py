@@ -11,6 +11,9 @@ import yaml
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{2,62}$")
 TOKEN_PATTERN = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG_PATH = PROJECT_DIR / "project.yaml"
+DEFAULT_OUTPUT_DIR = PROJECT_DIR / "build"
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -126,20 +129,35 @@ def render(template: str, tokens: dict[str, str]) -> str:
     return TOKEN_PATTERN.sub(lambda match: tokens[match.group(1)], template)
 
 
+def render_project(config_path: Path, output_dir: Path) -> list[Path]:
+    config = load_config(config_path)
+    tokens = build_tokens(config)
+    template_dir = PROJECT_DIR / "deployment"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    template_names = {path.name for path in template_dir.glob("*.sql")}
+    unexpected_sql = {path.name for path in output_dir.glob("*.sql")} - template_names
+    if unexpected_sql:
+        raise ValueError(
+            "Output directory contains SQL without a matching template; "
+            f"review and remove stale files before rendering: {sorted(unexpected_sql)}"
+        )
+
+    output_paths = []
+    for template_path in sorted(template_dir.glob("*.sql")):
+        output_path = output_dir / template_path.name
+        output_path.write_text(render(template_path.read_text(), tokens), encoding="utf-8")
+        output_paths.append(output_path)
+    return output_paths
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Render portable Snowflake demo SQL")
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
 
-    config = load_config(args.config)
-    tokens = build_tokens(config)
-    template_dir = Path(__file__).resolve().parents[1] / "deployment"
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-
-    for template_path in sorted(template_dir.glob("*.sql")):
-        output_path = args.output_dir / template_path.name
-        output_path.write_text(render(template_path.read_text(), tokens), encoding="utf-8")
+    for output_path in render_project(args.config, args.output_dir):
         print(f"Rendered {output_path}")
 
 
