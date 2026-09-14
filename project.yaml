@@ -1,0 +1,52 @@
+project:
+  name: credit-default-early-warning
+  prefix: CRISK_DEMO
+  description: Synthetic retail credit default MLOps demonstration
+
+snowflake:
+  database: CRISK_DEMO_DB
+  warehouse: CRISK_DEMO_WH
+  compute_pool: CRISK_DEMO_POOL
+  schemas:
+    raw: RAW
+    dev: DEV
+    test: TEST
+    prod: PROD
+    control: CONTROL
+  stages:
+    releases: RELEASES
+    jobs: JOB_PAYLOADS
+    dags: DAG_PAYLOADS
+  roles:
+    developer: CRISK_DEMO_DEVELOPER
+    engineer: CRISK_DEMO_ENGINEER
+    prod_owner: CRISK_DEMO_PROD_OWNER
+    service: CRISK_DEMO_SERVICE
+
+compute:
+  warehouse_size: XSMALL
+  warehouse_auto_suspend_seconds: 60
+  pool_instance_family: CPU_X64_S
+  pool_min_nodes: 1
+  pool_max_nodes: 1
+  pool_auto_suspend_seconds: 300
+
+data:
+  seed: 20260912
+  account_count: 5000
+  first_observation_month: 2024-03-01
+  observation_months: 30
+  as_of_date: 2026-09-01
+  outcome_window_days: 90
+  drift_start_date: 2026-01-01
+
+model:
+  name: CREDIT_DEFAULT_EARLY_WARNING
+  experiment_name: CREDIT_DEFAULT_DEVELOPMENT
+  outcome_column: DEFAULT_WITHIN_90D
+  version_prefix: CANDIDATE
+  review_rate: 0.10
+  minimum_roc_auc: 0.72
+  minimum_average_precision: 0.20
+  maximum_brier_score: 0.16
+  minimum_segment_roc_auc: 0.62

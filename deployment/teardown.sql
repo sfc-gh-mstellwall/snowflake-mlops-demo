@@ -1,0 +1,16 @@
+-- Destructive and intentionally scoped to the configured demo prefix.
+-- Run inventory.sql and review its output first.
+
+USE ROLE ACCOUNTADMIN;
+
+-- Future phases add task suspension statements above the DROP DATABASE command.
+DROP DATABASE IF EXISTS {{DATABASE}};
+DROP COMPUTE POOL IF EXISTS {{COMPUTE_POOL}};
+DROP WAREHOUSE IF EXISTS {{WAREHOUSE}};
+
+DROP ROLE IF EXISTS {{SERVICE_ROLE}};
+DROP ROLE IF EXISTS {{DEVELOPER_ROLE}};
+DROP ROLE IF EXISTS {{ENGINEER_ROLE}};
+DROP ROLE IF EXISTS {{PROD_OWNER_ROLE}};
+
+SELECT 'TEARDOWN_COMPLETE' AS STATUS, '{{PREFIX}}' AS REMOVED_PREFIX;

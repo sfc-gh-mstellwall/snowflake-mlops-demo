@@ -1,0 +1,33 @@
+# Cortex Code local state and plans
+.snowflake/
+*.plan.md
+
+# Rendered deployment output
+build/
+
+# Python environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Notebook local state
+.ipynb_checkpoints/
+
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+connections.toml
+config.toml
+*.pem
+*.p8
+credentials.json
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
