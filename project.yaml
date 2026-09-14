@@ -26,9 +26,9 @@ snowflake:
 compute:
   warehouse_size: XSMALL
   warehouse_auto_suspend_seconds: 60
-  pool_instance_family: CPU_X64_S
+  pool_instance_family: GEN_X64_G2_8
   pool_min_nodes: 1
-  pool_max_nodes: 1
+  pool_max_nodes: 4
   pool_auto_suspend_seconds: 300
 
 data:

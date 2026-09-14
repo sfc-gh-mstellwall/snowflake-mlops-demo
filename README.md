@@ -29,7 +29,6 @@ scripts/           Configuration validation and SQL rendering
 tests/             Renderer and destructive-name safety tests
 project.yaml       Portable names, compute, data, and model settings
 workspace_setup.sql One-time compute prerequisite for a fresh target account
-requirements-dev.txt
 ```
 
 ## Phase 1
@@ -45,41 +44,47 @@ Phase 1 creates an isolated Snowflake environment containing:
 
 No external data, network access, or credentials are required to generate the dataset.
 
-## Open as a Git-backed Workspace
+## Prerequisites
 
-This demonstration is designed to run from a private Git-backed Workspace in the target Snowflake account. A local clone and local Python environment are not required.
+This demonstration runs from a private Git-backed Workspace in the target Snowflake account. A local clone and local Python environment are not required.
+
+Before starting, confirm that the target account provides:
+
+- A Git API integration and authentication method that can read `https://github.com/sfc-gh-mstellwall/snowflake-mlops-demo`.
+- A role that can create roles, databases, warehouses, compute pools, schemas, stages, tasks, experiments, models, notebook projects, and model monitors, and grant the required account privileges. The supplied administrative SQL uses `ACCOUNTADMIN`.
+- An x86 compute pool for a Workspace notebook service. The repository default is `CRISK_DEMO_POOL` with instance family `GEN_X64_G2_8`.
+- Snowflake Container Runtime CPU 2.9. The repository assumes its bundled packages, including PyYAML, rather than reinstalling them. See the [CPU 2.9 package list](https://docs.snowflake.com/en/developer-guide/snowflake-ml/container-runtime/releases/cpu/2_9).
+
+If `CRISK_DEMO_POOL` is missing, run `workspace_setup.sql` in a Workspace SQL editor with the administrative role before creating the notebook service. The script creates only the initial compute pool. The rendered bootstrap later adopts the same pool idempotently, and teardown removes it.
+
+If you change the compute-pool name or settings in `project.yaml`, make the same changes in `workspace_setup.sql` before running either script.
+
+## Open the Git-backed Workspace
 
 1. Sign in to the intended demonstration account. Do not use an account where the configured demo object names belong to another workload.
 2. In Snowsight, open **Projects → Workspaces → From Git repository**.
 3. Select the approved Git API integration and authentication method, then use `https://github.com/sfc-gh-mstellwall/snowflake-mlops-demo` and branch `main`.
 4. Create the private Git-backed Workspace. Snowflake does not support creating this Workspace with SQL or CLI and attaching Git later.
 5. Review `project.yaml`. Keep `project.prefix` ending in `_DEMO`; every destructive account object must begin with that exact prefix.
+6. If the prerequisite compute pool is missing, open and run `workspace_setup.sql`.
+7. Open `scripts/render_sql.py` and connect it to a notebook service using `CRISK_DEMO_POOL` and Snowflake Container Runtime CPU 2.9.
 
 Each user creates a separate private Git-backed Workspace. Collaboration and updates use repository branches, commits, pull requests, and the Workspace Git controls rather than Workspace sharing.
 
 ## Render and run Phase 1
 
-Repository Python files require an x86 notebook service. If the target account does not already provide a suitable compute pool, open and run `workspace_setup.sql` in the Workspace SQL editor first. It creates the default `CRISK_DEMO_POOL`; the full bootstrap adopts it idempotently and teardown removes it. If you change the compute-pool defaults in `project.yaml`, make the same changes in `workspace_setup.sql` before running either file.
+With `scripts/render_sql.py` open and connected to the notebook service, select **Run** in the Python file editor. The script detects the Workspace notebook kernel, reads `project.yaml`, and creates `build/` at the repository root. Python files in Workspaces run as complete files and show output in the **Output** tab.
 
-Open `scripts/render_sql.py` in the Workspace and connect it to a notebook service on that pool, using a Python and Container Runtime version compatible with the account. Install the repository development requirements in that service environment from the Workspace terminal:
+PyYAML is already included in Container Runtime CPU 2.9, so no package installation is required to render the SQL. The repository tests use Python's standard-library `unittest` framework and require no additional packages.
 
-```bash
-uv pip install -r requirements-dev.txt
-```
-
-Select **Run** in the Python file editor. With no arguments, the script reads `project.yaml` and creates `build/` at the repository root. Python files in Workspaces run as complete files and show output in the **Output** tab.
-
-The equivalent Workspace terminal command is:
+To run the repository safety tests from the Workspace terminal:
 
 ```bash
-python scripts/render_sql.py
+cd scripts
+python -m unittest discover -s ../tests -v
 ```
 
-Run the repository safety tests from the same terminal:
-
-```bash
-python -m pytest
-```
+Running from `scripts/` matches the working directory used by the Workspace Python editor and validates the same repository-path behaviour.
 
 Review the generated files in `build/` before executing them:
 
@@ -90,15 +95,17 @@ build/inventory.sql
 build/teardown.sql
 ```
 
-Open `build/bootstrap.sql` in the Workspace SQL editor and run it with a role that can create roles, databases, warehouses, compute pools, and account-level task grants. The default script selects `ACCOUNTADMIN`; change that only if the target account uses a different administrative role with the required privileges.
+Open `build/bootstrap.sql` in the Workspace SQL editor and run it with a role that can create roles, databases, warehouses, compute pools, and account-level task grants. The default script selects `ACCOUNTADMIN`; change that only if the target account uses a different administrative role with the required privileges. Its final result sets summarise row and account counts, temporal coverage, label availability, default prevalence, controlled drift, and product mix.
 
-Next, open and run `build/verify_data.sql`. Continue to notebook development only when `PHASE_1_STATUS` is `PASS` and the visible population checks are reasonable.
+Next, open and run `build/inventory.sql`. It verifies that the configured account-level resources and current lifecycle objects are present. Its `SHOW` result sets are an object inventory rather than a pass/fail gate; empty results identify objects that are not present in that category.
+
+Then open and run `build/verify_data.sql`. It verifies the generated data rather than the object inventory: row counts, temporal coverage, labels, controlled drift, operational segments, training-label finality, and key uniqueness. Continue to notebook development only when `PHASE_1_STATUS` is `PASS` and the visible population checks are reasonable.
 
 The generated `build/` directory is intentionally ignored by Git. Commit changes to configuration, templates, scripts, tests, and notebooks, not account-specific rendered SQL.
 
 ## Teardown
 
-From the same Git-backed Workspace, run `build/inventory.sql` and review every listed object. Shut down the Workspace notebook service before executing `build/teardown.sql`, because the service uses the configured compute pool. Teardown removes the configured database, warehouse, compute pool, and roles.
+From the same Git-backed Workspace, rerun `build/inventory.sql` and review every listed object. Shut down the Workspace notebook service before executing `build/teardown.sql`, because the service uses the configured compute pool. Teardown removes the configured database, warehouse, compute pool, and roles.
 
 The private Git-backed Workspace is not managed by these scripts. Delete it separately through Snowsight after the Snowflake objects have been removed and any intended repository changes have been committed and pushed.
 
