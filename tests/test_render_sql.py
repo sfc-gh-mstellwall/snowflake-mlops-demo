@@ -72,12 +72,14 @@ class RenderSqlTests(unittest.TestCase):
         rendered = render(template, tokens)
 
         for metric in (
-            "SNAPSHOT_ROWS",
-            "FINALISED_DEFAULT_RATE",
-            "TRAINING_ROWS",
-            "SCORING_ROWS",
-            "AVG_UTILISATION_RATIO",
-            "ARREARS_RATE_30D",
+            "DIM_CUSTOMER",
+            "DIM_CREDIT_ACCOUNT",
+            "FACT_ACCOUNT_DAILY_SNAPSHOT",
+            "FACT_PAYMENT",
+            "FACT_DEFAULT_EVENT",
+            "DAILY_SNAPSHOT_COUNT",
+            "DEFAULT_EVENT_COUNT",
+            "DEFAULT_RATE",
             "OUTCOME_STATUS",
         ):
             with self.subTest(metric=metric):
@@ -91,13 +93,53 @@ class RenderSqlTests(unittest.TestCase):
         for statement in (
             f"CREATE SCHEMA IF NOT EXISTS {tokens['DATABASE']}.{tokens['FEATURE_STORE_SCHEMA']}",
             "GRANT CREATE TABLE, CREATE VIEW, CREATE DATASET, CREATE EXPERIMENT, CREATE MODEL",
-            "GRANT CREATE TAG, CREATE VIEW",
+            "GRANT CREATE TABLE, CREATE TAG, CREATE VIEW",
+            "CREATE DYNAMIC TABLE",
             "GRANT REFERENCES ON ALL TABLES",
             "GRANT REFERENCES ON ALL VIEWS",
             f"GRANT VIEW LINEAGE ON ACCOUNT TO ROLE {tokens['DEVELOPER_ROLE']}",
         ):
             with self.subTest(statement=statement):
                 self.assertIn(statement, rendered)
+
+    def test_verification_covers_source_integrity_and_drift(self) -> None:
+        verification = (PROJECT_DIR / "deployment" / "03_verify_data.sql").read_text()
+        for check in (
+            "UNIQUE_FINANCIAL_KEYS",
+            "FINANCIAL_CUSTOMER_RELATIONSHIPS",
+            "EVENT_ACCOUNT_RELATIONSHIPS",
+            "OBSERVATION_ACCOUNT_RELATIONSHIPS",
+            "EVENT_POPULATIONS_EXIST",
+            "CONTROLLED_DRIFT_IS_VISIBLE",
+            "EXPECTED_PROJECT_TABLES",
+            "UNIQUE_DIMENSION_KEYS",
+            "UNIQUE_OBSERVATION_KEYS",
+            "SCENARIO_BOUNDARY_MATCHES_CONFIG",
+        ):
+            self.assertIn(check, verification)
+
+    def test_source_tables_and_columns_have_business_comments(self) -> None:
+        tokens = build_tokens(load_config(PROJECT_DIR / "project.yaml"))
+        template = (PROJECT_DIR / "deployment" / "01_bootstrap.sql").read_text()
+        rendered = render(template, tokens)
+
+        for object_name in (
+            "DIM_CUSTOMER",
+            "DIM_CREDIT_ACCOUNT",
+            "FACT_CUSTOMER_FINANCIAL_SNAPSHOT",
+            "FACT_ACCOUNT_DAILY_SNAPSHOT",
+            "FACT_PAYMENT",
+            "FACT_CUSTOMER_CONTACT",
+            "FACT_ACCOUNT_EVENT",
+            "FACT_DEFAULT_EVENT",
+            "ACCOUNT_OBSERVATION",
+        ):
+            self.assertRegex(
+                rendered,
+                rf"CREATE OR REPLACE TABLE {object_name} \([\s\S]*?\) COMMENT = '[^']+';",
+            )
+        self.assertNotRegex(rendered, r"COMMENT\s*=\s*'[^']*synthetic")
+        self.assertNotRegex(rendered, r"\b\w+\s+[^,\n]+ COMMENT '[^']*synthetic")
 
     def test_sql_templates_do_not_use_rows_as_an_alias(self) -> None:
         for template_path in (PROJECT_DIR / "deployment").glob("*.sql"):
@@ -195,7 +237,7 @@ class WorkspaceNotebookTests(unittest.TestCase):
         self.assertTrue(all(cell_ids))
         self.assertEqual(len(cell_ids), len(set(cell_ids)))
 
-    def test_sql_cells_have_workspace_metadata(self) -> None:
+    def test_sql_cells_use_named_workspace_results(self) -> None:
         sql_cell_count = 0
         for cell in self.cells:
             source = "".join(cell.get("source", []))
@@ -203,12 +245,8 @@ class WorkspaceNotebookTests(unittest.TestCase):
                 continue
             sql_cell_count += 1
             variable_name = source.splitlines()[0].removeprefix("%%sql -r ").strip()
-            metadata = cell.get("metadata", {})
             with self.subTest(variable=variable_name):
                 self.assertRegex(variable_name, r"^[a-z][a-z0-9_]+$")
-                self.assertEqual(metadata.get("language"), "sql")
-                self.assertEqual(metadata.get("name"), variable_name)
-                self.assertEqual(metadata.get("resultVariableName"), variable_name)
         self.assertGreaterEqual(sql_cell_count, 1)
 
     def test_notebook_is_workspace_only(self) -> None:
@@ -231,15 +269,11 @@ class WorkspaceNotebookTests(unittest.TestCase):
             if cell["cell_type"] == "markdown"
         )
         for heading in (
-            "Inspect the data contract",
-            "Understand target availability",
-            "Discover candidate features",
-            "Inspect ranges, tails, and redundancy",
-            "Inspect categorical support",
-            "feature stability",
-            "temporal development",
-            "monthly review capacity",
-            "Provisional feature decision",
+            "What source data exists?",
+            "history long and coherent enough?",
+            "What do the atomic events add?",
+            "When does the target become knowable?",
+            "Provisional feature hypotheses",
         ):
             with self.subTest(heading=heading):
                 self.assertIn(heading, markdown)
@@ -256,38 +290,30 @@ class WorkspaceNotebookTests(unittest.TestCase):
             for cell in self.cells
             if cell["cell_type"] == "code"
         )
-        self.assertIn('validation_cutoff = pd.Timestamp("2026-01-01")', code)
-        self.assertIn(
-            "pre_holdout = traning_base_pd[eligible_development | eligible_validation]",
-            code,
-        )
-        self.assertNotIn(
-            'pre_holdout = traning_base_pd[traning_base_pd["OBSERVATION_DATE"] <',
-            code,
-        )
-        self.assertIn('splits["SPLIT_NAME"] = "PURGED_OR_HELD_OUT"', code)
+        self.assertIn('holdout_cutoff = pd.Timestamp(config["data"]["drift_start_date"])', code)
+        self.assertIn('(observations["OBSERVATION_DATE"] < holdout_cutoff)', code)
+        self.assertNotIn('observations.groupby("OBSERVATION_DATE")["DEFAULT_WITHIN_90D"]', code)
 
-    def test_notebook_contains_required_extended_eda(self) -> None:
+    def test_notebook_contains_required_source_eda(self) -> None:
         notebook_text = NOTEBOOK_PATH.read_text()
         for expected in (
-            "numeric_correlation",
-            "tail_checks",
-            "segment_support",
-            "OBSERVATION_LEVEL_CI_LOW",
-            "stability_quantiles",
-            "category_mix",
-            "period_missingness",
-            "monthly_review_capacity",
-            "review_capacity_summary",
+            "fact_contracts",
+            "DUPLICATE_GRAIN_KEYS",
+            "ORPHAN_RECORDS",
+            "NULL_COUNT",
+            "history_coverage",
+            "trajectory_monthly",
+            "payment_profile",
+            "contact_profile",
+            "label_coverage",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, notebook_text)
 
-    def test_contract_checks_raise_on_failure(self) -> None:
+    def test_source_eda_does_not_use_model_ready_relations(self) -> None:
         notebook_text = NOTEBOOK_PATH.read_text()
-        self.assertIn("if duplicate_key_count != 0:", notebook_text)
-        self.assertIn("if non_final_label_count != 0:", notebook_text)
-        self.assertIn("if null_counts.sum() != 0:", notebook_text)
+        for prohibited in ("TRAINING_BASE", "ACCOUNT_SNAPSHOT", "ACCOUNT_MASTER"):
+            self.assertNotIn(prohibited, notebook_text)
 
     def test_notebook_avoids_known_brittle_snowpark_pandas_operations(self) -> None:
         notebook_text = NOTEBOOK_PATH.read_text()

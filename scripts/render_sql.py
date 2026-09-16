@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import os
 import re
 import sys
 from datetime import date
+from calendar import monthrange
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +13,7 @@ import yaml
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{2,62}$")
 TOKEN_PATTERN = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
-PROJECT_DIR = Path(os.getcwd()).parent
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_DIR / "project.yaml"
 DEFAULT_OUTPUT_DIR = PROJECT_DIR / "build"
 
@@ -95,6 +95,8 @@ def build_tokens(config: dict[str, Any]) -> dict[str, str]:
         "OUTCOME_WINDOW_DAYS": data["outcome_window_days"],
     }
     for name, value in integer_tokens.items():
+        if isinstance(value, bool) or not str(value).isdigit():
+            raise ValueError(f"{name} must be a positive integer")
         number = int(value)
         if number < 1:
             raise ValueError(f"{name} must be positive")
@@ -120,6 +122,26 @@ def build_tokens(config: dict[str, Any]) -> dict[str, str]:
         raise ValueError("Dates must satisfy FIRST_OBSERVATION_MONTH < DRIFT_START_DATE <= AS_OF_DATE")
     if int(tokens["POOL_MIN_NODES"]) > int(tokens["POOL_MAX_NODES"]):
         raise ValueError("POOL_MIN_NODES cannot exceed POOL_MAX_NODES")
+
+    if first_month.day != 1:
+        raise ValueError("FIRST_OBSERVATION_MONTH must be the first day of a month")
+    final_month_number = first_month.month - 1 + int(tokens["OBSERVATION_MONTHS"]) - 1
+    final_observation = date(
+        first_month.year + final_month_number // 12,
+        final_month_number % 12 + 1,
+        1,
+    )
+    if final_observation > as_of_date:
+        raise ValueError("The final observation month cannot be after AS_OF_DATE")
+
+    history_month_number = first_month.month - 1 - 12
+    history_start = date(
+        first_month.year + history_month_number // 12,
+        history_month_number % 12 + 1,
+        1,
+    )
+    tokens["FINANCIAL_SNAPSHOT_MONTHS"] = str(int(tokens["OBSERVATION_MONTHS"]) + 12)
+    tokens["DAILY_HISTORY_DAYS"] = str((as_of_date - history_start).days + 1)
 
     return tokens
 
