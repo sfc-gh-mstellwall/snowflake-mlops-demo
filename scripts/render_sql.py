@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import os
 import sys
 from datetime import date
 from calendar import monthrange
@@ -13,7 +14,8 @@ import yaml
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{2,62}$")
 TOKEN_PATTERN = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
-PROJECT_DIR = Path(__file__).resolve().parents[1]
+#PROJECT_DIR = Path(__file__).resolve().parents[1]
+PROJECT_DIR = Path(os.getcwd()).parent
 DEFAULT_CONFIG_PATH = PROJECT_DIR / "project.yaml"
 DEFAULT_OUTPUT_DIR = PROJECT_DIR / "build"
 
