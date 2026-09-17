@@ -45,14 +45,27 @@ class NotebookStructureTests(unittest.TestCase):
                     ast.parse(source)
 
     def test_sql_cells_use_workspace_magic_and_never_rows_alias(self):
+        sql_cell_count = 0
         for name in NOTEBOOK_PATHS:
             notebook = load_notebook(name)
             for cell in notebook["cells"]:
                 if cell["cell_type"] != "code":
                     continue
-                source = "".join(cell.get("source", [])).lstrip()
-                self.assertFalse(bool(re.match(r"(SELECT|WITH|SHOW|DESCRIBE|USE)\b", source, re.I)))
+                source = "".join(cell.get("source", []))
+                stripped = source.lstrip()
+                self.assertFalse(bool(re.match(r"(SELECT|WITH|SHOW|DESCRIBE|USE)\b", stripped, re.I)))
                 self.assertIsNone(re.search(r"\bAS\s+ROWS\b", source, re.I))
+                if not stripped.startswith("%%sql -r "):
+                    continue
+                sql_cell_count += 1
+                variable_name = stripped.splitlines()[0].removeprefix("%%sql -r ").strip()
+                metadata = cell.get("metadata", {})
+                with self.subTest(notebook=name, variable=variable_name):
+                    self.assertRegex(variable_name, r"^[a-z][a-z0-9_]+$")
+                    self.assertEqual(metadata.get("language"), "sql")
+                    self.assertEqual(metadata.get("name"), variable_name)
+                    self.assertEqual(metadata.get("resultVariableName"), variable_name)
+        self.assertGreaterEqual(sql_cell_count, 1)
 
 
 class SourceExplorationTests(unittest.TestCase):

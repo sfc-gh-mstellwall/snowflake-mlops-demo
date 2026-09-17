@@ -245,8 +245,12 @@ class WorkspaceNotebookTests(unittest.TestCase):
                 continue
             sql_cell_count += 1
             variable_name = source.splitlines()[0].removeprefix("%%sql -r ").strip()
+            metadata = cell.get("metadata", {})
             with self.subTest(variable=variable_name):
                 self.assertRegex(variable_name, r"^[a-z][a-z0-9_]+$")
+                self.assertEqual(metadata.get("language"), "sql")
+                self.assertEqual(metadata.get("name"), variable_name)
+                self.assertEqual(metadata.get("resultVariableName"), variable_name)
         self.assertGreaterEqual(sql_cell_count, 1)
 
     def test_notebook_is_workspace_only(self) -> None:
