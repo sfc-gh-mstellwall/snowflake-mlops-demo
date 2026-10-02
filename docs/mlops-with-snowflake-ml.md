@@ -53,7 +53,7 @@ Feature transformation can use in-memory open-source preprocessors, warehouse-ba
 
 **Snowflake ML Experiments** records parameters, metrics, and artefacts for each run, making candidate comparison reproducible. Completed runs are immutable, and callbacks support common frameworks such as XGBoost, LightGBM, and Keras. When a model is registered with `exp.log_model()` during an active run, Snowflake links the Experiment and model version; this relationship is visible in the Experiment UI and as an `EXPERIMENT → MODEL` lineage edge through `GET_LINEAGE` ([Experiments](https://docs.snowflake.com/en/developer-guide/snowflake-ml/experiments); [GET_LINEAGE](https://docs.snowflake.com/en/sql-reference/functions/get_lineage-snowflake-core)).
 
-Training can scale in different ways: distributed estimators train one large model; Many Model Training trains independent models per partition; and the `Tuner` API evaluates multiple hyperparameter configurations ([distributed training](https://docs.snowflake.com/en/developer-guide/snowpark-ml/reference/latest/distributors); [Many Model Training](https://docs.snowflake.com/en/developer-guide/snowflake-ml/train-models-across-partitions); [HPO](https://docs.snowflake.com/en/developer-guide/snowflake-ml/container-hpo)). **ML Jobs** turns Python functions or projects into repeatable workloads on compute pools, suitable for schedulers and external orchestrators ([ML Jobs](https://docs.snowflake.com/en/developer-guide/snowflake-ml/ml-jobs/overview)).
+Training can scale in different ways: distributed estimators train one large model; Many Model Training trains independent models per partition; and the `Tuner` API evaluates multiple hyperparameter configurations ([distributed training](https://docs.snowflake.com/en/developer-guide/snowpark-ml/reference/latest/distributors); [Many Model Training](https://docs.snowflake.com/en/developer-guide/snowflake-ml/train-models-across-partitions); [HPO](https://docs.snowflake.com/en/developer-guide/snowflake-ml/container-hpo)). **Code Bundles** package reviewed Python or notebook entrypoints as named, inspectable execution units. Compute-pool bundles are generally available; warehouse bundles remain Preview and are not the workshop default. **ML Jobs** remains a supported alternative for established or specialised job workflows ([Code Bundles](https://docs.snowflake.com/en/developer-guide/code-bundles/code-bundles); [ML Jobs](https://docs.snowflake.com/en/developer-guide/snowflake-ml/ml-jobs/overview)).
 
 The **Model Registry** stores immutable, schema-level model versions regardless of where training occurred. A version can include signatures, dependencies, metrics, task metadata, comments, and tags. `USAGE` permits warehouse inference; `READ` additionally supports SPCS inference and metadata access. Strict dependency reproducibility requires governed `pip_requirements` or `conda_dependencies`; when exact versions must remain exact, disable dependency relaxation with `options={"relax_version": False}` ([Model Registry](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/overview)). Registry explainability can calculate SHAP values for supported model types and is currently in Preview ([explainability](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/model-explainability)).
 
@@ -83,10 +83,11 @@ For a team's first production model, the simplest useful path is usually batch-o
 
 1. Develop in a Notebook in a Git-backed Workspace, then move reusable logic into tested Python modules.
 2. Create point-in-time-correct features and an immutable training Dataset.
-3. Record the training run in Experiments and register the approved model version with its signature, strict dependencies, metrics, and task metadata.
-4. Run warehouse batch inference through SQL or `ModelVersion.run()` and persist prediction IDs and timestamps.
-5. Join predictions to delayed ground truth and create a model version monitor.
-6. Schedule the pipeline with a Task Graph and assign explicit production ownership, alerts, rollback, and retirement rules.
+3. Package the reviewed modules as a compute-pool Code Bundle and execute that immutable source on demand. Do not invoke `EXECUTE CODE BUNDLE` from a notebook cell.
+4. Validate the **pipeline release** in Pre-Prod. Then run the same approved source in Prod to create a **new Prod-trained candidate**. Registration and screening `accepted` are not live serving.
+5. Approve the exact Prod candidate separately, then run warehouse batch inference through SQL or `ModelVersion.run()` and persist prediction IDs and timestamps.
+6. Join predictions to delayed ground truth and create a model version monitor.
+7. Add a Task Graph only after on-demand execution is proven, and assign explicit production ownership, alerts, rollback, and retirement rules.
 
 Real-time services, online features, Gateways, and distributed batch jobs should be added when their latency or scale benefits justify their additional operational controls.
 
@@ -118,6 +119,7 @@ The companion paper, *Implementing MLOps on Snowflake*, addresses those decision
 - Inference overview — https://docs.snowflake.com/en/developer-guide/snowflake-ml/inference/inference-overview
 - ML Observability — https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/model-observability
 - ML Lineage — https://docs.snowflake.com/en/developer-guide/snowflake-ml/ml-lineage
+- Code Bundles — https://docs.snowflake.com/en/developer-guide/code-bundles/code-bundles
 - Task Graphs — https://docs.snowflake.com/en/developer-guide/snowflake-python-api/snowflake-python-managing-tasks
 
 Product capabilities and availability status referenced as of September 2026.

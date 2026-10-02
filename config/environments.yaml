@@ -1,0 +1,67 @@
+# Platform names stay in project.yaml. This file binds those names to workshop
+# environments. Schema isolation is a teaching simplification; separate
+# databases remain the production recommendation.
+
+version: 1
+policy: same-workflow-different-bindings
+teaching_topology: schemas-in-one-database
+production_recommendation: separate-databases-one-account
+
+shared_source:
+  database_ref: snowflake.database
+  schema_ref: snowflake.schemas.raw
+  disclosure: >
+    Shared RAW source data is a disclosed synthetic teaching simplification.
+    Production training should not silently reuse a mutable development
+    Feature Store.
+
+environments:
+  DEV:
+    presentation_name: Dev
+    schema_ref: snowflake.schemas.dev
+    feature_store_schema: DEV_FEATURE_STORE
+    experiment_schema_ref: snowflake.schemas.dev
+    dataset_schema_ref: snowflake.schemas.dev
+    model_schema_ref: snowflake.schemas.dev
+    bundle_schema_ref: snowflake.schemas.dev
+    purpose: Interactive notebooks and on-demand candidate evidence
+    may_change_live_serving: false
+  TEST:
+    presentation_name: Pre-Prod
+    teaching_alias: TEST
+    schema_ref: snowflake.schemas.test
+    feature_store_schema: TEST_FEATURE_STORE
+    experiment_schema_ref: snowflake.schemas.test
+    dataset_schema_ref: snowflake.schemas.test
+    model_schema_ref: snowflake.schemas.test
+    bundle_schema_ref: snowflake.schemas.test
+    purpose: Pipeline-release validation only
+    may_approve_future_prod_model: false
+    may_change_live_serving: false
+  PROD:
+    presentation_name: Prod
+    schema_ref: snowflake.schemas.prod
+    feature_store_schema: PROD_FEATURE_STORE
+    experiment_schema_ref: snowflake.schemas.prod
+    dataset_schema_ref: snowflake.schemas.prod
+    model_schema_ref: snowflake.schemas.prod
+    bundle_schema_ref: snowflake.schemas.prod
+    purpose: New Prod-trained candidates, approval, batch serving and monitoring
+    may_change_live_serving: true
+
+write_paths:
+  pipeline_attempt:
+    writer_roles: [service]
+    reader_roles: [developer, engineer, prod_owner, service]
+  environment_deployment:
+    writer_roles: [engineer]
+    reader_roles: [developer, engineer, prod_owner, service]
+  source_release:
+    writer_roles: [engineer]
+    reader_roles: [developer, engineer, prod_owner, service]
+  promotion_decision:
+    writer_roles: [prod_owner]
+    reader_roles: [engineer, prod_owner]
+  serving_selection:
+    writer_roles: [prod_owner]
+    reader_roles: [engineer, prod_owner, service]

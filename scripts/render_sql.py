@@ -13,7 +13,29 @@ import yaml
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{2,62}$")
 TOKEN_PATTERN = re.compile(r"\{\{([A-Z0-9_]+)\}\}")
-PROJECT_DIR = Path(__file__).resolve().parents[1]
+
+
+def resolve_project_dir() -> Path:
+    candidates: list[Path] = []
+    script_file = globals().get("__file__")
+    if script_file:
+        script_path = Path(script_file).resolve()
+        candidates.extend(script_path.parents[:2])
+    cwd = Path.cwd().resolve()
+    candidates.extend([cwd, cwd.parent])
+
+    seen: list[Path] = []
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.append(candidate)
+        if (candidate / "project.yaml").is_file() and (candidate / "deployment").is_dir():
+            return candidate
+    tried = ", ".join(str(path) for path in seen)
+    raise FileNotFoundError(f"Could not locate project.yaml. Tried: {tried}")
+
+
+PROJECT_DIR = resolve_project_dir()
 DEFAULT_CONFIG_PATH = PROJECT_DIR / "project.yaml"
 DEFAULT_OUTPUT_DIR = PROJECT_DIR / "build"
 

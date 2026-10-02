@@ -11,28 +11,32 @@ The practical MLOps objective is to turn that experiment into this repeatable fl
 ```text
 Notebook experiment
         ↓
-Repeatable training workflow
+Repeatable training modules
         ↓
-On-demand execution in DEV
+Immutable source release
         ↓
-Automated validation in TEST/QA
+On-demand Code Bundle in DEV
         ↓
-Candidate model and evidence
+Pipeline validation in Pre-Prod
         ↓
-Separate promotion decision
+Same approved source in PROD
         ↓
-Inference and monitoring in PROD
+New Prod-trained candidate and evidence
+        ↓
+Separate screening, approval and serving decisions
+        ↓
+Warehouse batch inference and monitoring
         ↓
 Scheduled or triggered evaluation and retraining
 ```
 
-The first production-oriented artefact is a repeatable training workflow that is testable and executable by someone other than its author. Once validated, the workflow can be operated on demand, on a schedule, or in response to an event.
+The first production-oriented artefact is a repeatable training workflow that is testable and executable by someone other than its author. Once validated, the workflow can be operated on demand, on a schedule, or in response to an event. Pre-Prod can approve the pipeline release; it cannot approve a model that has not yet been trained in Prod.
 
 This paper assumes Notebooks in Workspaces and complements *MLOps with Snowflake ML*, which describes the broader lifecycle and platform capabilities.
 
 ## 2. Initiate the project
 
-The project should begin with a repository and an agreed operating boundary, rather than an empty notebook. The repository is the source of truth; a Workspace is a development environment; an NPO or ML Job is an execution unit; and the Registry model version is the trained artefact.
+The project should begin with a repository and an agreed operating boundary, rather than an empty notebook. The repository is the source of truth; a Workspace is a development environment; a Code Bundle is the recommended unattended execution unit; and the Registry model version is the trained artefact. An NPO or ML Job remains a supported alternative for teams that already operate those units.
 
 ### Initiation options
 
@@ -50,7 +54,7 @@ This model has a deliberate automation boundary. The platform team can provision
 
 For the companion demonstration repository, the Git-backed Workspace is the interactive execution boundary. The user runs repository Python files with a Workspace notebook service, opens rendered SQL in the Workspace SQL editor, and develops notebooks alongside the same modules and deployment definitions. A local clone is optional and is not part of the demonstration procedure. Python files execute as complete scripts in Workspaces and can import other repository files by relative path ([Python files in Workspaces](https://docs.snowflake.com/en/user-guide/ui-workspaces-python)).
 
-Production deployment should not depend on a developer's private Workspace. After pull-request approval, CI/CD copies the approved repository contents to an internal or temporary stage, creates or versions an NPO from that stage, or submits the packaged Python project as an ML Job. This preserves the commit-to-release relationship ([production NPO workflow](https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks-in-workspaces/notebooks-in-workspaces-workflow-scenarios)).
+Production deployment should not depend on a developer's private Workspace. After pull-request approval, CI/CD copies the approved repository contents to an internal or temporary stage and creates a release-specific Code Bundle from that immutable payload. An NPO or ML Job can implement the same contract when an organisation already operates those units. This preserves the commit-to-release relationship ([Code Bundles](https://docs.snowflake.com/en/developer-guide/code-bundles/code-bundles); [production NPO workflow](https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks-in-workspaces/notebooks-in-workspaces-workflow-scenarios)).
 
 The resulting bootstrap path is:
 
@@ -65,7 +69,7 @@ Feature branch, development, and pull request
         ↓
 Approved commit deployed by CI/CD
         ↓
-Environment-specific NPO or ML Job and Task Graph
+Environment-specific Code Bundle and later Task Graph
 ```
 
 ## 3. Stage 1: Turn the notebook into a repeatable workflow
@@ -125,7 +129,7 @@ Environment files contain non-secret references such as object names, feature ve
 4. The data scientist opens Snowsight and creates a private Git-backed Workspace from the repository, using the approved Git API integration and authentication method.
 5. The data scientist creates a feature branch, uses a platform-provided compute pool or runs the repository's one-time Workspace compute setup, configures a Workspace notebook service, runs repository bootstrap and validation assets, develops in `notebooks/churn_experiment.ipynb`, and moves reusable logic into `src/churn/`.
 6. A pull request runs unit tests, configuration validation, data-contract tests against DEV, dependency checks, and a small training smoke test.
-7. After approval, CI/CD identifies the merge commit as a release candidate and deploys it to TEST/QA. The production deployment later uses that same release identifier.
+7. After approval, CI/CD identifies the merge commit as a release candidate and deploys it to Pre-Prod. The production deployment later uses that same release identifier.
 
 OAuth is a practical choice for interactive Workspace users. Automated pipelines normally use a non-interactive Git and Snowflake authentication method approved by the organisation, with workload identity federation preferred for Snowflake CI authentication.
 
@@ -138,13 +142,13 @@ validate:
 package:
   - record: commit SHA, dependency lock, and release identifier
   - upload: repository snapshot to the TEST release stage
-deploy_test:
-  - create: release-specific NPO or ML Job definition
-  - run: TEST/QA training and inference validation
+deploy_preprod:
+  - create: release-specific Code Bundle
+  - run: Pre-Prod pipeline and serving-contract validation
 promote_release:
-  - require: TEST/QA approval
+  - require: Pre-Prod pipeline-release approval
   - upload: the same repository snapshot to the PROD release stage
-  - deploy: PROD NPO or ML Job and Task Graph in suspended state
+  - deploy: PROD Code Bundle and later Task Graph in suspended state
 verify_and_resume:
   - check: effective release, grants, smoke test, monitoring, and rollback
   - resume: production schedule or trigger
@@ -173,7 +177,7 @@ The training workflow should accept configuration rather than hidden notebook st
 - Evaluation metrics and threshold result.
 - Source-code commit and configuration identifier.
 - Lineage and artefact locations.
-- Machine-readable success, rejection, or failure status.
+- Machine-readable `accepted`, `rejected`, or `failed` status. `accepted` means eligible for a later approval decision, not live serving.
 
 The training entry point ties those outputs to one Experiment run. The following examples are illustrative: the `ML_*` objects, roles, CRE, release identifiers, configuration classes, and application functions must be created or implemented for the organisation. The control flow is concrete even though application-specific code is abbreviated:
 
@@ -220,41 +224,40 @@ If warehouse inference is planned, validate warehouse compatibility and set `tar
 
 The team should operate the workflow manually before scheduling it. This proves that it is independent of notebook state and exposes its real runtime, cost, permissions, and failure modes.
 
-There are two practical execution units.
+There are three practical execution units. The recommended default is a compute-pool **Code Bundle**.
+
+### Code Bundle
+
+A **Code Bundle** packages reviewed Python modules, or a maintained notebook entrypoint, as a named execution unit with an inspectable specification. Compute-pool bundles are generally available. Warehouse bundles remain Preview and are not the recommended training path. Execute the bundle from a SQL file or task, never from a notebook cell ([Code Bundles](https://docs.snowflake.com/en/developer-guide/code-bundles/code-bundles); [EXECUTE CODE BUNDLE](https://docs.snowflake.com/en/sql-reference/sql/execute-code-bundle)).
+
+Prefer a release-specific bundle name bound to an immutable payload. Record the commit, payload digest, specification digest, runtime and the effective executing identity. Local version labels do not prove cross-environment equality.
+
+An on-demand DEV validation can execute the deployed bundle explicitly:
+
+```sql
+EXECUTE CODE BUNDLE ML_DEV.CHURN.CHURN_TRAINING_R_2026_09_11_1
+  ARGUMENTS = ('--environment', 'dev', '--config', 'config/dev.yaml');
+```
 
 ### Versioned Notebook Project Object
 
-An approved Workspace snapshot can be deployed as a versioned **Notebook Project Object** (NPO). This preserves the notebook as the executable entry point while separating deployed content from ongoing edits. It suits workflows that remain understandable and maintainable as a notebook project and do not require extensive reuse outside it ([NPO scheduling](https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks-in-workspaces/notebooks-in-workspaces-schedule)).
-
-Standardise the NPO version, main file, dependency file, runtime or CRE, query warehouse, compute pool, and environment arguments. Direct `EXECUTE NOTEBOOK PROJECT` uses caller-as-user semantics, so development execution can still reflect a person's privileges; this must change before production.
-
-An on-demand DEV validation can execute the deployed project explicitly:
-
-```sql
-EXECUTE NOTEBOOK PROJECT ML_DEV.CHURN.CHURN_TRAINING
-  MAIN_FILE = 'notebooks/train.ipynb'
-  COMPUTE_POOL = 'ML_DEV_CPU_POOL'
-  RUNTIME = 'cre@ml_cpu_py311_v3'
-  QUERY_WAREHOUSE = 'ML_DEV_WH'
-  ARGUMENTS = '--environment dev --config config/dev.yaml'
-  REQUIREMENTS_FILE = 'requirements.txt';
-```
+An approved Workspace snapshot can still be deployed as a versioned **Notebook Project Object** (NPO). This preserves the notebook as the executable entry point while separating deployed content from ongoing edits. It remains valid when a team already operates notebook projects; it is not the workshop default ([NPO scheduling](https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks-in-workspaces/notebooks-in-workspaces-schedule)).
 
 ### ML Job
 
-Use an **ML Job** when training is modular Python, needs project packaging, requires larger or multi-node compute, or should run independently of a notebook service. Use `@remote` for a function, file or directory submission for a project, and `MLJobDefinition` for a reusable payload executed with different parameters ([ML Jobs](https://docs.snowflake.com/en/developer-guide/snowflake-ml/ml-jobs/overview)).
+Use an **ML Job** when an organisation already operates job-based training, needs specialised project packaging, or requires a job API rather than a Code Bundle. Use `@remote` for a function, file or directory submission for a project, and `MLJobDefinition` for a reusable payload executed with different parameters ([ML Jobs](https://docs.snowflake.com/en/developer-guide/snowflake-ml/ml-jobs/overview)).
 
-NPOs and ML Jobs are alternative execution units for the same training contract. A team can begin with an NPO and later move the entry point to an ML Job while retaining its data, evaluation, registration, and promotion contracts.
+Code Bundles, NPOs and ML Jobs can implement the same training contract. Keep data, evaluation, registration and promotion contracts stable if the execution unit later changes.
 
-For an NPO-based release, CI/CD uploads the approved commit to an immutable stage path. A release-specific NPO name provides an unambiguous binding between the code validated in TEST/QA and the deployed object:
+For a Code Bundle release, CI/CD uploads the approved commit to an immutable stage path. A release-specific bundle name provides an unambiguous binding between the code validated in Pre-Prod and the object later deployed to Prod:
 
 ```sql
-CREATE NOTEBOOK PROJECT ML_TEST.CHURN.CHURN_TRAINING_R_2026_09_11_1
-  FROM '@ML_TEST.CHURN.ML_RELEASES/churn-risk/2026.09.11.1'
+CREATE CODE BUNDLE ML_PREPROD.CHURN.CHURN_TRAINING_R_2026_09_11_1
+  FROM '@ML_PREPROD.CHURN.ML_RELEASES/churn-risk/2026.09.11.1'
   COMMENT = 'churn-risk release 2026.09.11.1';
 ```
 
-The release pipeline records the commit SHA, release identifier, stage path, and NPO name together. File upload is performed by CI before this SQL runs. An organisation that manages multiple versions within one NPO can instead use `ALTER NOTEBOOK PROJECT ... ADD VERSION`, but its deployment process must record and verify the effective version used by each task.
+The release pipeline records the commit SHA, release identifier, stage path, payload digest and bundle name together. File upload is performed by CI before this SQL runs.
 
 ### DEV exit criteria
 
@@ -293,48 +296,43 @@ Deploying the graph does not itself prove that the pipeline runs. Release verifi
 - A failed evaluation cannot advance to promotion.
 - The return value clearly distinguishes trained, rejected, and failed candidates.
 
-During development and TEST/QA, the Task Graph can run on demand. Production scheduling or event triggers are introduced after the graph is validated and the retraining policy is approved.
+During development and Pre-Prod, the Task Graph can run on demand. Production scheduling or event triggers are introduced after the graph is validated and the retraining policy is approved.
 
-For a single-NPO starting point, the scheduling fragment is explicit about the release-specific NPO and runtime configuration. It assumes the NPO, warehouse, compute pool, task-owner grants, monitoring, and failure notification have already passed TEST/QA. CI substitutes the approved release identifier before executing the deployment SQL:
+For a Code Bundle starting point, the scheduling fragment is explicit about the release-specific bundle and runtime configuration. It assumes the bundle, warehouse, compute pool, task-owner grants, monitoring, and failure notification have already passed Pre-Prod. CI substitutes the approved release identifier before executing the deployment SQL:
 
 ```sql
 CREATE OR REPLACE TASK ML_PROD.CHURN.CHURN_TRAINING_TASK
   WAREHOUSE = ML_PROD_WH
   SCHEDULE = 'USING CRON 0 4 * * SUN Europe/Stockholm'
 AS
-  EXECUTE NOTEBOOK PROJECT ML_PROD.CHURN.CHURN_TRAINING_R_2026_09_11_1
-    MAIN_FILE = 'notebooks/train.ipynb'
-    COMPUTE_POOL = 'ML_PROD_CPU_POOL'
-    RUNTIME = 'cre@ml_cpu_py311_v3'
-    QUERY_WAREHOUSE = 'ML_PROD_WH'
-    ARGUMENTS = '--environment prod --config config/prod.yaml'
-    REQUIREMENTS_FILE = 'requirements.txt';
+  EXECUTE CODE BUNDLE ML_PROD.CHURN.CHURN_TRAINING_R_2026_09_11_1
+    ARGUMENTS = ('--environment', 'prod', '--config', 'config/prod.yaml');
 
 -- Resume only after deployment checks confirm the release and grants.
 ALTER TASK ML_PROD.CHURN.CHURN_TRAINING_TASK RESUME;
 ```
 
-For a multi-step graph, the release process deploys the graph definition instead. The task-owner role receives the minimum privileges needed by every step and is tested in TEST/QA before the PROD graph is resumed.
+For a multi-step graph, the release process deploys the graph definition instead. The task-owner role receives the minimum privileges needed by every step and is tested in Pre-Prod before the PROD graph is resumed.
 
-## 6. Stage 4: Validate the pipeline release in TEST/QA
+## 6. Stage 4: Validate the pipeline release in Pre-Prod
 
 The pipeline release moves through environments with an immutable release identifier. Model promotion remains a separate decision in Stage 5.
 
 | Environment | Purpose | Expected outcome |
 |---|---|---|
 | DEV | Fast iteration and on-demand execution | Reproducible workflow and candidate evidence |
-| TEST/QA | Production-like data contracts, dependencies, privileges, and failure testing | Release decision for pipeline and model |
-| PROD | Governed execution, controlled promotion, inference, and monitoring | Operated model with accountable owner |
+| Pre-Prod | Production-like data contracts, dependencies, privileges, and failure testing | Pipeline-release decision only |
+| PROD | Governed execution, new candidate training, controlled approval, inference, and monitoring | Operated model with accountable owner |
 
 Separate databases are a useful starting point; separate accounts can provide stronger isolation where governance, resilience, or data locality requires it.
 
 Two independent things move through these environments:
 
-**Pipeline release.** Promote one version-controlled commit or release containing the Python package, NPO or ML Job entry point, Task Graph definition, tests, dependency policy, and deployment definitions. Deploy that same release separately into DEV, TEST/QA, and PROD with environment-specific object names, configuration, ownership, and grants. TEST/QA approves the pipeline release; PROD deployment does not rebuild it from an untracked Workspace state.
+**Pipeline release.** Promote one version-controlled commit or release containing the Python package, Code Bundle specification, Task Graph definition, tests, dependency policy, and deployment definitions. Deploy that same release separately into DEV, Pre-Prod, and PROD with environment-specific object names, configuration, ownership, and grants. Pre-Prod approves the pipeline release; it cannot approve a model that Prod has not yet trained. PROD deployment does not rebuild the release from an untracked Workspace state.
 
 **Candidate model.** A pipeline run produces a model candidate and its evidence. Candidate promotion follows the quality and approval process in Stage 5 and remains separate from deployment of the training pipeline. A new pipeline release does not automatically replace the production model, and a newly approved model does not necessarily require a new pipeline release.
 
-### What TEST/QA should prove
+### What Pre-Prod should prove
 
 - Source, feature, label, and prediction schemas match the production contract.
 - Point-in-time feature generation does not leak future information.
@@ -443,7 +441,7 @@ Evaluate candidate
 Approve and promote, or retain incumbent
 ```
 
-The same **version-controlled Task Graph definition** can be deployed as separate task objects in DEV, TEST/QA, and PROD. DEV can run it on demand, TEST/QA can use it for release validation, and PROD can attach a schedule or trigger. Object names, configuration, ownership, and grants change by environment; the promoted release identifier and workflow contract should remain traceable.
+The same **version-controlled Task Graph definition** can be deployed as separate task objects in DEV, Pre-Prod, and PROD. DEV can run it on demand, Pre-Prod can use it for pipeline-release validation, and PROD can attach a schedule or trigger. Object names, configuration, ownership, and grants change by environment; the promoted release identifier and workflow contract should remain traceable.
 
 ## 10. How the way of working changes
 
@@ -457,7 +455,7 @@ The same **version-controlled Task Graph definition** can be deployed as separat
 
 ### ML engineer or platform engineer
 
-- Packages NPOs or ML Jobs and maintains runtime environments.
+- Packages Code Bundles, and optionally NPOs or ML Jobs, and maintains runtime environments.
 - Builds the Task Graph, CI/CD, environment configuration, and service identity.
 - Implements deployment, promotion, rollback, telemetry, and operational controls.
 - Ensures that model, feature, and pipeline versions remain compatible.
@@ -487,13 +485,13 @@ Project initiation and production delivery have distinct owners:
 | Git API integration and authentication policy | Platform and security teams |
 | Private Git-backed Workspace | Individual data scientist |
 | DEV schema, approved compute, and developer grants | Platform team through delegated project roles |
-| NPO or ML Job and Task Graph releases | ML engineering or CI service role |
+| Code Bundle and Task Graph releases | ML engineering or CI service role |
 | Production model, promotion policy, and incidents | Production or model owner |
 
 | Role | Primary responsibility |
 |---|---|
 | `ML_DEVELOPER` | Develop and register candidates in DEV using approved data and compute |
-| `ML_ENGINEER` | Deploy NPOs, Jobs, Task Graphs, monitors, and supported infrastructure |
+| `ML_ENGINEER` | Deploy Code Bundles, Task Graphs, monitors, and supported infrastructure |
 | `ML_PROD_OWNER` | Own production models, services, monitors, and incident decisions |
 | `ML_SERVICE` | Provide narrow unattended execution or CI identity; no human login |
 
@@ -510,7 +508,7 @@ ML Jobs generally require compute-pool, schema `CREATE SERVICE`, and payload-sta
 3. Pin the project, runtime, Registry dependencies, and target platforms.
 4. Record Experiment, model, configuration, metrics, and lineage outputs.
 5. Split the workflow into Task Graph steps and test retries and idempotency.
-6. Deploy to TEST/QA with production-like data contracts and a narrow execution identity.
+6. Deploy to Pre-Prod with production-like data contracts and a narrow execution identity. Then run the same approved source in Prod to create a new candidate.
 7. Implement quality gates and a separate promotion decision.
 8. Deploy the selected inference path and ground-truth collection in PROD.
 9. Configure monitoring, alerts, rollback, support, and retirement.
@@ -521,6 +519,8 @@ This sequence creates a training and model-promotion system that can be run, tes
 ## 13. References
 
 - Create and deploy ML pipelines — https://docs.snowflake.com/en/developer-guide/snowflake-ml/create-pipelines-deploy
+- Code Bundles — https://docs.snowflake.com/en/developer-guide/code-bundles/code-bundles
+- EXECUTE CODE BUNDLE — https://docs.snowflake.com/en/sql-reference/sql/execute-code-bundle
 - Notebooks in Workspaces — https://docs.snowflake.com/en/user-guide/ui-snowsight/notebooks-in-workspaces/notebooks-in-workspaces-schedule
 - Custom Runtime Images — https://docs.snowflake.com/en/developer-guide/snowflake-ml/custom-runtime-images
 - Experiments — https://docs.snowflake.com/en/developer-guide/snowflake-ml/experiments

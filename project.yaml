@@ -40,3 +40,7 @@ data:
   as_of_date: 2026-09-01
   outcome_window_days: 90
   drift_start_date: 2026-01-01
+
+contracts:
+  environments: config/environments.yaml
+  workflow: config/workflow.yaml

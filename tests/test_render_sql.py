@@ -160,6 +160,7 @@ class RenderSqlTests(unittest.TestCase):
             "SHOW STAGES IN DATABASE",
             "SHOW TASKS IN DATABASE",
             "SHOW NOTEBOOK PROJECTS IN DATABASE",
+            "SHOW CODE BUNDLES",
             "SHOW MODELS IN DATABASE",
             "SHOW MODEL MONITORS IN DATABASE",
             "SHOW EXPERIMENTS IN DATABASE",
@@ -170,6 +171,26 @@ class RenderSqlTests(unittest.TestCase):
     def test_workspace_defaults_are_relative_to_project_root(self) -> None:
         self.assertEqual(DEFAULT_CONFIG_PATH, PROJECT_DIR / "project.yaml")
         self.assertEqual(DEFAULT_OUTPUT_DIR, PROJECT_DIR / "build")
+        self.assertTrue(DEFAULT_CONFIG_PATH.is_file())
+        self.assertTrue((PROJECT_DIR / "deployment").is_dir())
+
+    def test_project_dir_is_found_from_workspace_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            workspace_root = Path(temporary_directory)
+            (workspace_root / "project.yaml").write_text("project: {}\n")
+            (workspace_root / "deployment").mkdir()
+            workspace_cwd = workspace_root / "notebooks"
+            workspace_cwd.mkdir()
+            with (
+                patch.object(
+                    render_sql_module,
+                    "__file__",
+                    "/tmp/workspace-kernel/scripts/render_sql.py",
+                ),
+                patch.object(Path, "cwd", return_value=workspace_cwd),
+            ):
+                resolved = render_sql_module.resolve_project_dir()
+            self.assertEqual(resolved, workspace_root.resolve())
 
     def test_workspace_setup_matches_default_compute_pool(self) -> None:
         tokens = build_tokens(load_config(DEFAULT_CONFIG_PATH))
@@ -195,6 +216,10 @@ class RenderSqlTests(unittest.TestCase):
                     "01_bootstrap.sql",
                     "02_inventory.sql",
                     "03_verify_data.sql",
+                    "04_control_contracts.sql",
+                    "05_code_bundle.sql",
+                    "06_environment_releases.sql",
+                    "07_monitoring.sql",
                     "99_teardown.sql",
                 },
             )
@@ -295,7 +320,8 @@ class WorkspaceNotebookTests(unittest.TestCase):
             if cell["cell_type"] == "code"
         )
         self.assertIn('holdout_cutoff = pd.Timestamp(config["data"]["drift_start_date"])', code)
-        self.assertIn('(observations["OBSERVATION_DATE"] < holdout_cutoff)', code)
+        self.assertIn("observation_datetime = pd.to_datetime(observations[\"OBSERVATION_DATE\"])", code)
+        self.assertIn("observation_datetime < holdout_cutoff", code)
         self.assertNotIn('observations.groupby("OBSERVATION_DATE")["DEFAULT_WITHIN_90D"]', code)
 
     def test_notebook_contains_required_source_eda(self) -> None:

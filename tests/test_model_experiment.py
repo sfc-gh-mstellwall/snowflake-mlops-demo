@@ -109,15 +109,21 @@ class FeatureEngineeringTests(unittest.TestCase):
         ):
             self.assertIn(name, self.code)
         self.assertIn("attach_feature_desc", self.code)
-        self.assertIn("range_between(-29, 0)", self.code)
-        self.assertIn("range_between(-89, 0)", self.code)
-        self.assertIn("range_between(-179, 0)", self.code)
+        self.assertIn('Feature.avg("DAILY_UTILISATION", "30d")', self.code)
+        self.assertIn('Feature.stddev("DAILY_UTILISATION", "90d")', self.code)
+        self.assertIn('Feature.sum("DELINQUENCY_START", "180d")', self.code)
+        self.assertIn('Feature.sum("PAYMENT_AMOUNT", "30d")', self.code)
+        self.assertIn('Feature.count("PAYMENT_ID", "90d")', self.code)
+        self.assertIn('Feature.count("CONTACT_ID", "30d")', self.code)
+        self.assertNotIn("range_between(-89, 0)", self.code)
+        self.assertNotIn("range_between(-179, 0)", self.code)
 
     def test_implements_native_365_day_aggregation(self):
         self.assertIn('Feature.avg("DAILY_UTILISATION", "365d")', self.code)
         self.assertIn('Feature.max("DAILY_DAYS_PAST_DUE", "365d")', self.code)
-        self.assertIn('feature_granularity="1 day"', self.code)
-        self.assertIn('refresh_freq="1 day"', self.code)
+        self.assertIn('Feature.sum("IS_MISSED", "180d")', self.code)
+        self.assertGreaterEqual(self.code.count('feature_granularity="1 day"'), 3)
+        self.assertGreaterEqual(self.code.count('refresh_freq="1 day"'), 3)
 
     def test_implements_complete_planned_feature_contract(self):
         for feature_name in (
@@ -160,7 +166,7 @@ class FeatureEngineeringTests(unittest.TestCase):
         self.assertNotIn("ExperimentTracking", self.code)
 
     def test_metadata_uses_business_definitions(self):
-        registration_text = self.code[self.code.index("feature_descriptions") :]
+        registration_text = self.code[self.code.index("feature_version =") :]
         self.assertNotIn("synthetic", registration_text.lower())
         self.assertIn("account currency units", registration_text)
         self.assertIn("trailing 90-day window", registration_text)

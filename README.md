@@ -1,33 +1,63 @@
 # Snowflake MLOps Demo
 
-A phased, practical demonstration of moving a retail credit-risk model from interactive development in Snowflake Notebooks in Workspaces to repeatable training, controlled promotion, inference, monitoring, and retraining evaluation.
+A phased demonstration of taking a retail credit-risk early-warning model from exploratory notebooks to a repeatable Code Bundle, a separately approved Prod candidate, warehouse batch serving, and reviewed monitoring.
 
-The synthetic use case estimates whether an existing credit account will enter a defined default state within 90 days. It is designed for portfolio monitoring and case prioritisation, not automated credit approval or adverse action.
+The synthetic use case estimates whether an existing credit account will enter a defined default state within 90 days. It is for portfolio monitoring and case prioritisation, not automated credit approval or adverse action.
+
+## Operating model
+
+The workshop default is:
+
+```text
+Private Git-backed Workspace
+  -> exploratory notebooks
+  -> tested Python modules
+  -> immutable source release
+  -> compute-pool Code Bundle
+  -> Pre-Prod pipeline validation
+  -> same approved source in Prod
+  -> new Prod-trained candidate
+  -> exact-candidate screening
+  -> separate approval
+  -> warehouse batch serving
+  -> monitoring and reviewed action
+```
+
+Two releases stay independent. A pipeline release moves approved source, dependencies and tests. A model release authorises a specific Registry version to serve. Screening `accepted` means the candidate is eligible for that later decision; it is not approval and does not change live serving.
+
+The disposable demo keeps `RAW`, `DEV`, `TEST`, `PROD` and `CONTROL` in one database. `TEST` is the teaching name for **Pre-Prod**. Separate databases in one account remain the production recommendation. ML Jobs and exact-artefact copy remain supported alternatives, not the workshop default.
+
+Do not run this disposable workload in Snowhouse.
 
 ## Project status
 
-The repository is intentionally built in reviewable phases:
+The repository is built in reviewable increments. Nothing below Phase 3 is live-verified.
 
-| Phase | Scope | Status |
+| Increment | Scope | Status |
 |---|---|---|
 | 1 | Portable bootstrap, synthetic data, validation, inventory, teardown | Implemented, awaiting target-account execution |
-| 2 | Evidence-first interactive development notebook | Implemented, awaiting target Workspace execution |
-| 3 | Interactive Feature Store and tracked model experimentation | Implemented, awaiting target Workspace execution |
-| 4 | Extract the proven notebook workflow into repeatable training | Planned |
-| 5 | ML Job and Task Graph orchestration | Planned |
-| 6 | TEST/QA promotion gates and rollback | Planned |
-| 7 | Warehouse inference, monitoring, and retraining evaluation | Planned |
+| 2 | Evidence-first source exploration notebook | Implemented, awaiting target Workspace execution |
+| 3 | Feature Store, immutable Datasets and tracked experiments | Implemented, awaiting target Workspace execution |
+| 4 | Extracted contracts, screening logic and Demo 1 evidence handoff | Implemented as source, awaiting review |
+| 5 | Allowlisted payload, specification and SQL inspect path | Implemented as source, awaiting authorised execution |
+| 6 | Environment-specific bindings; Pre-Prod cannot approve a Prod model | Implemented as source, awaiting authorised execution |
+| 7 | Separate approval, warehouse batch serving and recovery | Implemented as source, awaiting authorised execution |
+| 8 | Delayed-outcome replay, monitoring and reviewed actions | Implemented as source; no bootstrap replay |
+| 9 | Timed rehearsal and readiness evidence | Planned; separately authorised |
 
-Later phase directories such as `src/` and `config/` will be added after the preceding phase has been demonstrated and reviewed.
+`src/`, `config/`, Code Bundle specifications and later control SQL are added as those increments land. Older ML Job / TEST-QA plans are historical; see `.snowflake/cortex/plans/README.md`.
 
 ## Repository structure
 
 ```text
-deployment/        Snowflake bootstrap, verification, inventory, and teardown templates
-docs/              Conceptual and practical MLOps papers
+config/            Environment bindings and frozen unattended-training contract
+src/               Extracted workflow contracts, screening and later training modules
+jobs/              Unattended training entrypoint for later Code Bundle execution
+deployment/        Snowflake bootstrap, verification, inventory, teardown and later bundle SQL
+docs/              Papers, workshop runbook and later readiness notes
 notebooks/         Snowflake Workspace notebooks for interactive development
 scripts/           Configuration validation and SQL rendering
-tests/             Renderer and destructive-name safety tests
+tests/             Renderer, notebook-contract and later workflow tests
 project.yaml       Platform object names, compute, and synthetic-data settings
 00_workspace_setup.sql Numbered compute prerequisite for a fresh target account
 ```
@@ -36,7 +66,7 @@ project.yaml       Platform object names, compute, and synthetic-data settings
 
 Phase 1 creates an isolated Snowflake environment containing:
 
-- A disposable database with `RAW`, `DEV`, `TEST`, `PROD`, and `CONTROL` schemas.
+- A disposable database with `RAW`, `DEV`, `TEST` (Pre-Prod), `PROD`, and `CONTROL` schemas.
 - Dedicated demo roles, warehouse, CPU compute pool, and internal stages.
 - Documented customer and revolving-credit account dimensions.
 - Dated financial estimates, daily servicing snapshots, payments, contacts, account events, and first-default events.
@@ -94,6 +124,8 @@ Review the generated files in `build/` before executing them:
 build/01_bootstrap.sql
 build/02_inventory.sql
 build/03_verify_data.sql
+build/04_control_contracts.sql
+build/05_code_bundle.sql
 build/99_teardown.sql
 ```
 
@@ -141,17 +173,17 @@ Then open `notebooks/03_credit_default_model_experiment.ipynb` and paste the imm
 - Manually select a candidate and record the rationale before enabling the held-out section.
 - Materialise refit and held-out Datasets only after the manual gate, then refit once, inspect held-out evidence, record a conclusion, and log the final experimental model.
 
-Every model fit is covered by an Experiment run, and every successful fitted candidate is logged before that run ends. Registry signature inference uses a Dataset-backed Snowpark DataFrame so source lineage can be preserved. HPO runs four sequential trials per family by default in the notebook; this is an explicit interactive budget, not a production tuning policy.
+Every model fit is covered by a context-managed Experiment run, and every successful fitted candidate is logged before that run ends. The refit and conclusion runs are separate closed runs. Registry signature inference uses a Dataset-backed Snowpark DataFrame so source lineage can be preserved. HPO runs four sequential trials per family by default in the notebook; this is an explicit interactive budget, not a production tuning policy.
 
-`project.yaml` is used only as the platform hand-off for Snowflake object names and generated-data settings such as the simulated as-of date. Feature versions, temporal cutoffs, model and Experiment names, model parameters, HPO budget, and evaluation gates are introduced in the notebooks at the point where the investigation motivates them.
+`project.yaml` is used only as the platform hand-off for Snowflake object names and generated-data settings such as the simulated as-of date. Feature versions, temporal cutoffs, model and Experiment names, model parameters, HPO budget, and evaluation gates are introduced in the notebooks at the point where the investigation motivates them. Freezing those choices into a release contract is a later increment, not something the interactive notebooks invent automatically.
 
 There is no prepared `RAW.TRAINING_BASE` or `RAW.ACCOUNT_SNAPSHOT`. Notebook 01 explores warehouse sources, notebook 02 derives reusable Feature Views and immutable Datasets, and notebook 03 reads only those Dataset versions.
 
-The final Experiment run intentionally remains active across several inspection cells. Complete the final model-logging cell to call `end_run()`. If an error occurs after the run starts, investigate it before starting another run; Snowflake Experiments do not permit two active runs in the same session. The `holdout_revealed` kernel flag is only a reminder and does not protect the hold-out across kernel restarts.
+If an error occurs after a run starts, investigate it before starting another run; Snowflake Experiments do not permit two active runs in the same session. The `holdout_revealed` kernel flag is only a reminder and does not protect the hold-out across kernel restarts. Manual candidate selection and the holdout assertion remain presenter gates; do not run those notebooks unattended unchanged.
 
 `build/01_bootstrap.sql` creates every schema and grant required before the notebooks run, including the Feature Store schema, Dataset creation, source references, and `VIEW LINEAGE`. The notebooks create only modelling artefacts that emerge from the investigation: the entity, Feature Views, Datasets, Experiments, and model versions.
 
-Phase 3 creates an entity tag and Feature View metadata in `DEV_FEATURE_STORE`, immutable Dataset versions and Experiment runs in `DEV`, and candidate versions in the Model Registry. These remain experimental artefacts: the notebook does not set a champion alias, promote a default, create a scheduled job, or deploy inference. Full lineage inspection requires Enterprise Edition or higher.
+Phase 3 creates an entity tag and Feature View metadata in `DEV_FEATURE_STORE`, immutable Dataset versions and Experiment runs in `DEV`, and candidate versions in the Model Registry. These remain experimental artefacts. Logging a model is registration, not screening acceptance, approval or serving activation. The notebooks do not set a champion alias, change a serving selector, create a Code Bundle, or deploy inference. Full lineage inspection requires Enterprise Edition or higher.
 
 The notebook has been statically checked in this repository but has not been executed against a target account. Verify Feature Store, HPO, Registry dependency resolution, plots, and lineage in the intended Workspace before treating Phase 3 as demonstrated.
 
@@ -163,8 +195,10 @@ The private Git-backed Workspace is not managed by these scripts. Delete it sepa
 
 ## Documentation
 
+- [Workshop demo runbook](docs/demo-runbook.md)
 - [MLOps with Snowflake ML](docs/mlops-with-snowflake-ml.md)
 - [From Notebook to Production with Snowflake ML](docs/implementing-mlops-on-snowflake.md)
+- [Plan index](.snowflake/cortex/plans/README.md)
 
 ## Important limitation
 

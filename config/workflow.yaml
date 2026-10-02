@@ -1,0 +1,149 @@
+# Frozen unattended-training contract. Notebooks remain the place where these
+# choices are motivated. Copying a value here is an explicit handoff, not an
+# automatic promotion of exploratory notebook state.
+
+version: 1
+status: draft-handoff
+contract_id: CREDIT_DEFAULT_WORKFLOW_V01
+source_of_choices: notebooks/03_credit_default_model_experiment.ipynb
+unattended_replays_hpo: false
+dirty_interactive_source: non-release-evidence
+
+model:
+  name: CREDIT_DEFAULT_EARLY_WARNING
+  experiment_name: CREDIT_DEFAULT_DEVELOPMENT
+  version_prefix: CANDIDATE
+  target_column: DEFAULT_WITHIN_90D
+  seed: 20260912
+  task: TABULAR_BINARY_CLASSIFICATION
+  target_platforms: [WAREHOUSE, SNOWPARK_CONTAINER_SERVICES]
+  relax_version: false
+  target_methods: [predict, predict_proba]
+
+datasets:
+  development: CREDIT_DEVELOPMENT
+  validation: CREDIT_VALIDATION
+  refit: CREDIT_REFIT
+  held_out: CREDIT_HELD_OUT
+
+temporal_policy:
+  development_cutoff: "2025-07-01"
+  holdout_cutoff_ref: data.drift_start_date
+  as_of_date_ref: data.as_of_date
+  outcome_window_days_ref: data.outcome_window_days
+  require_finality_before_cutoff: true
+  fit_preprocessing_on_training_only: true
+
+feature_inventory:
+  entity: CREDIT_ACCOUNT
+  join_key: ACCOUNT_ID
+  as_of_column: OBSERVATION_TS
+  version: V01
+  ownership_note: >
+    Every Feature View below is demo-developed in this account. None is an
+    externally shared production feature. ACCOUNT_PROFILE_FV is documented as
+    a separately owned-looking dependency only to teach pinned references.
+  views:
+    - name: ACCOUNT_PROFILE_FV
+      owner: demo-feature-owner
+      teaching_role: pinned-shared-style-dependency
+      demo_developed: true
+    - name: ACCOUNT_BALANCE_FV
+      owner: credit-default-model
+      teaching_role: model-owned
+      demo_developed: true
+    - name: ACCOUNT_PAYMENT_FV
+      owner: credit-default-model
+      teaching_role: model-owned
+      demo_developed: true
+    - name: ACCOUNT_CONTACT_FV
+      owner: credit-default-model
+      teaching_role: model-owned
+      demo_developed: true
+    - name: ACCOUNT_DELINQUENCY_FV
+      owner: credit-default-model
+      teaching_role: model-owned
+      demo_developed: true
+    - name: ACCOUNT_AGGREGATION_FV
+      owner: credit-default-model
+      teaching_role: model-owned
+      demo_developed: true
+
+features:
+  numeric:
+    - ACCOUNT_AGE_MONTHS
+    - CUSTOMER_TENURE_MONTHS
+    - CURRENT_CREDIT_LIMIT
+    - CURRENT_INCOME_ESTIMATE
+    - LIMIT_TO_INCOME_RATIO
+    - MONTHS_SINCE_LIMIT_CHANGE
+    - LIMIT_CHANGE_PERCENT_12M
+    - CURRENT_BALANCE
+    - CURRENT_UTILISATION
+    - AVG_UTILISATION_30D
+    - AVG_UTILISATION_90D
+    - MAX_UTILISATION_90D
+    - UTILISATION_STDDEV_90D
+    - BALANCE_CHANGE_30D
+    - BALANCE_CHANGE_90D
+    - DAYS_OVER_LIMIT_30D
+    - AVAILABLE_CREDIT_RATIO
+    - PAYMENT_SUM_30D
+    - PAYMENT_SUM_90D
+    - PAYMENT_COUNT_90D
+    - PAYMENT_TO_BALANCE_RATIO_30D
+    - PAYMENT_TO_AMOUNT_DUE_RATIO_30D
+    - PAYMENT_AMOUNT_TREND_3M
+    - MISSED_PAYMENT_COUNT_3M
+    - MISSED_PAYMENT_COUNT_6M
+    - DAYS_SINCE_LAST_PAYMENT
+    - CONTACT_COUNT_30D
+    - CONTACT_COUNT_90D
+    - BROKEN_PROMISE_COUNT_90D
+    - CURRENT_DAYS_PAST_DUE
+    - MAX_DAYS_PAST_DUE_3M
+    - MAX_DAYS_PAST_DUE_6M
+    - DELINQUENT_DAYS_90D
+    - DELINQUENCY_EPISODES_6M
+    - CONSECUTIVE_DELINQUENT_MONTHS
+    - DAYS_SINCE_LAST_DELINQUENCY
+    - AVG_UTILISATION_365D
+    - MAX_UTILISATION_365D
+    - MAX_DAYS_PAST_DUE_365D
+  categorical:
+    - PRODUCT_CODE
+    - ORIGINATION_CHANNEL
+
+estimator:
+  family: HIST
+  note: >
+    Unattended training uses this reviewed specification. It does not replay
+    notebook HPO or the manual selected_run cell.
+  classifier: HistGradientBoostingClassifier
+  parameters:
+    learning_rate: 0.08
+    max_iter: 120
+    max_leaf_nodes: 15
+    l2_regularization: 1.0
+    early_stopping: false
+
+screening:
+  minimum_roc_auc: 0.72
+  minimum_average_precision: 0.20
+  maximum_brier_score: 0.16
+  minimum_segment_roc_auc: 0.62
+  segment_support:
+    minimum_observations: 200
+    minimum_positives: 20
+    minimum_negatives: 20
+  required_segments:
+    - PRODUCT_CODE
+    - ORIGINATION_CHANNEL
+  accepted_means: eligible-for-separate-approval
+  accepted_does_not_mean: live-serving
+
+runtime:
+  container: Snowflake Container Runtime CPU 2.9
+  query_warehouse_ref: snowflake.warehouse
+  compute_pool_ref: snowflake.compute_pool
+  missing_or_mismatched_evidence: fail-closed
