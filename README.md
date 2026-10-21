@@ -51,8 +51,8 @@ The repository showcases the seven-stage MLOps loop across four Snowflake Worksp
 | Notebook | MLOps Stages | What It Demonstrates |
 |---|---|---|
 | `notebooks/01_credit_default_exploration.ipynb` | **1. Explore** | Source contract checks (`%%sql`), Snowpark DataFrame API key/grain/null verification, 365-day lookback coverage, and 90-day delayed label finality (`FINALISED` vs. `PENDING`). |
-| `notebooks/02_credit_default_feature_engineering.ipynb` | **2. Prepare** | Feature Store (`Entity("CREDIT_ACCOUNT")`, 3 tiled `FeatureView`s + 3 Snowpark-derived `FeatureView`s registered as `V01`), point-in-time spine cutoffs with 90-day finality purge, and immutable `fs.generate_dataset()` (`CREDIT_DEVELOPMENT`, `CREDIT_VALIDATION`) with upstream lineage. |
-| `notebooks/03_credit_default_model_experiment.ipynb` | **3. Train & Screen (DEV)** | `ExperimentTracking` runs (`LogisticRegression`, `HistGradientBoostingClassifier`, sequential `Tuner` HPO trials), manual presenter holdout gates, refit on `CREDIT_REFIT`, evaluation on `CREDIT_HELD_OUT`, and `Model Registry` logging with lineage. |
+| `notebooks/02_credit_default_feature_engineering.ipynb` | **2. Prepare (Feature Store)** | Feature Store (`Entity("CREDIT_ACCOUNT")`, 3 tiled `FeatureView`s + 3 Snowpark-derived `FeatureView`s registered as `V01` in `DEV_FEATURE_STORE`), raw-vs-derived sample spot checks, and point-in-time retrieval verification (`fs.retrieve_feature_values()`). |
+| `notebooks/03_credit_default_model_experiment.ipynb` | **2. Prepare (Datasets) → 3. Train & Screen (DEV)** | Feature Store discovery (`fs.list_entities()`, `fs.list_feature_views()`), feature selection, 90-day finality embargo spines, immutable `fs.generate_dataset()` (`CREDIT_DEVELOPMENT`, `CREDIT_VALIDATION`) with upstream lineage, `ExperimentTracking` runs (`LogisticRegression`, `HistGradientBoostingClassifier`, sequential `Tuner` HPO trials), presenter holdout gate, refit on `CREDIT_REFIT`, evaluation on `CREDIT_HELD_OUT`, and `Model Registry` logging. |
 | `notebooks/04_credit_default_release_serving_and_monitoring.ipynb` | **4. Review & Approve → 5. Serve → 6. Monitor → 7. Improve** | Release recording (`SOURCE_RELEASE`, `ENVIRONMENT_DEPLOYMENT`), unattended candidate creation in `Pre-Prod` (`TEST`) and `PROD` (`PIPELINE_ATTEMPT`), fail-closed owner approval (`PROMOTION_DECISION`), `ACTIVATE_SERVING` for **Warehouse Batch** (`SET ALIAS = PRODUCTION`) and **Online Gateway** (`SHADOW` vs. `SPLIT`), delayed 90-day outcome replay (`V_PREDICTION_OUTCOME_MATURITY`), and full-path rollback (`RECOVER_SERVING`). |
 
 ## Repository structure
@@ -157,15 +157,16 @@ First open `notebooks/02_credit_default_feature_engineering.ipynb` in the same p
 
 Run the notebook section by section rather than using **Run all**. It is structured as an interactive investigation:
 
-- Retrieve or create the account entity only after notebook 01 has established the source grain.
-- Develop profile, balance, payment, contact, delinquency, and native 365-day tiled aggregation features from lower-level dimensions, daily snapshots, and events.
-- Review window boundaries, ratios, missing-value meaning, and selected records before registering Feature Views.
-- Inspect finalised-label timing before choosing development and validation boundaries, without exposing held-out target rates.
-- Generate immutable point-in-time development and validation Datasets and inspect retrieved timestamps.
-- Inspect selected-account raw-versus-derived values, visual feature trajectories, and Feature View-to-Dataset lineage before handing the Dataset version to notebook 03.
+- Retrieve or create the `CREDIT_ACCOUNT` entity only after notebook 01 has established the source grain, explaining how the shared entity key connects features across monthly, daily, and event-level tables.
+- Develop profile, balance, payment, contact, delinquency, and native 365-day tiled aggregation features from lower-level dimensions, daily snapshots, and events, defining each source table once where first needed and inspecting `.limit(10)` samples at each step.
+- Review window boundaries, `div0null` ratios, missing-value meaning, and selected sample accounts before registering Feature Views (`V01`) in `DEV_FEATURE_STORE`.
+- Verify point-in-time feature retrieval (`fs.retrieve_feature_values()`) across all six registered `V01` Feature Views before handing off to notebook 03.
 
-Then open `notebooks/03_credit_default_model_experiment.ipynb` and paste the immutable Dataset version printed by notebook 02. This notebook does not reopen source facts or rebuild Feature Views. Run it section by section to:
+Then open `notebooks/03_credit_default_model_experiment.ipynb`. This notebook starts by discovering the registered Feature Views in `DEV_FEATURE_STORE`, selecting which features to include in the model, and generating the immutable training and validation Datasets. Run it section by section to:
 
+- Discover registered Entities and Feature Views (`fs.list_entities()`, `fs.list_feature_views()`) and inspect their documented feature catalog in `DEV_FEATURE_STORE`.
+- Select the six `V01` Feature Views and 41 predictor columns (`numeric_features` and `categorical_features`).
+- Inspect `RAW.AVAILABLE_GROUND_TRUTH` finality timing, construct embargoed development and temporal-validation spines (`OUTCOME_FINALITY_DATE < cutoff`), and generate immutable point-in-time `CREDIT_DEVELOPMENT` and `CREDIT_VALIDATION` Datasets via `fs.generate_dataset()` with upstream Feature View lineage.
 - Establish an unfitted prevalence reference.
 - Fit a logistic candidate, inspect coefficients and calibration, then test a non-linear candidate.
 - Compare monthly review capacity, segment support, and bounded permutation importance.
@@ -177,7 +178,7 @@ Every model fit is covered by a context-managed Experiment run, and every succes
 
 `project.yaml` is used only as the platform hand-off for Snowflake object names and generated-data settings such as the simulated as-of date. Feature versions, temporal cutoffs, model and Experiment names, model parameters, HPO budget, and evaluation gates are introduced in the notebooks at the point where the investigation motivates them. Freezing those choices into a release contract is a later increment, not something the interactive notebooks invent automatically.
 
-There is no prepared `RAW.TRAINING_BASE` or `RAW.ACCOUNT_SNAPSHOT`. Notebook 01 explores warehouse sources, notebook 02 derives reusable Feature Views and immutable Datasets, and notebook 03 reads only those Dataset versions.
+There is no prepared `RAW.TRAINING_BASE` or `RAW.ACCOUNT_SNAPSHOT`. Notebook 01 explores warehouse sources, notebook 02 engineers and registers reusable Feature Views (`V01`), and notebook 03 discovers those Feature Views, selects features, generates immutable Datasets, and runs tracked model experiments.
 
 If an error occurs after a run starts, investigate it before starting another run; Snowflake Experiments do not permit two active runs in the same session. The `holdout_revealed` kernel flag is only a reminder and does not protect the hold-out across kernel restarts. Manual candidate selection and the holdout assertion remain presenter gates; do not run those notebooks unattended unchanged.
 
