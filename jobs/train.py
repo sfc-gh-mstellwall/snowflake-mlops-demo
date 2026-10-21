@@ -5,9 +5,13 @@ import json
 import sys
 from pathlib import Path
 
+from snowflake.snowpark import functions as F
+
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
+# Load project.yaml and workflow/environment contracts via credit_default modules
+# so unattended training runs against the pinned schema and estimator specification.
 from credit_default.contracts import get_session, load_project  # noqa: E402
 from credit_default.release import pipeline_release_decision  # noqa: E402
 from credit_default.training import train_and_register_candidate  # noqa: E402
@@ -47,14 +51,14 @@ def main(argv: list[str] | None = None) -> int:
     result["pipeline_release_decision"] = release_gate
 
     if args.environment == "TEST":
-        session.sql(
-            f"""
-            UPDATE {database}.{control_schema}.ENVIRONMENT_DEPLOYMENT
-            SET PIPELINE_VALIDATION_STATUS = ?
-            WHERE RELEASE_ID = ? AND ENVIRONMENT = 'TEST'
-            """,
-            params=[release_gate["decision"], args.release_id],
-        ).collect()
+        env_deployments = session.table(
+            f"{database}.{control_schema}.ENVIRONMENT_DEPLOYMENT"
+        )
+        env_deployments.update(
+            {"PIPELINE_VALIDATION_STATUS": F.lit(release_gate["decision"])},
+            (F.col("RELEASE_ID") == F.lit(args.release_id))
+            & (F.col("ENVIRONMENT") == F.lit("TEST")),
+        )
 
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result["screening_status"] == "accepted" else 1

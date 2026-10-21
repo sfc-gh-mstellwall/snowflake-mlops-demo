@@ -4,11 +4,14 @@ import json
 import uuid
 from typing import Any, Mapping
 
+from snowflake.snowpark import functions as F
+
 from .contracts import (
     expected_feature_columns,
     expected_feature_views,
     load_project,
     load_workflow_contract,
+    lookup_dotted,
     resolve_environment,
     validate_feature_columns,
 )
@@ -45,6 +48,8 @@ def build_training_pipeline(contract: Mapping[str, Any] | None = None):
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+    # Load config/workflow.yaml when not supplied so the unattended pipeline uses
+    # the exact reviewed preprocessing and estimator hyperparameters from Notebook 03.
     resolved_contract = contract or load_workflow_contract()
     spec = estimator_specification(resolved_contract)
     preprocessor = ColumnTransformer(
@@ -100,6 +105,8 @@ def train_and_register_candidate(
     from snowflake.ml.experiment import ExperimentTracking
     from snowflake.ml.model import task as ml_task
 
+    # Load project.yaml, config/workflow.yaml, and config/environments.yaml to bind
+    # the target environment's Feature Store, Dataset, Experiment, and Model Registry schemas.
     project = load_project()
     contract = load_workflow_contract(project)
     environment = resolve_environment(environment_name, project)
@@ -114,6 +121,10 @@ def train_and_register_candidate(
     feature_columns = expected_feature_columns(contract)
     target_col = contract["model"]["target_column"]
     temporal = contract["temporal_policy"]
+    holdout_cutoff = str(
+        temporal.get("refit_cutoff")
+        or lookup_dotted(project, temporal["holdout_cutoff_ref"])
+    )
 
     datasets = ensure_environment_datasets(
         session,
@@ -124,20 +135,23 @@ def train_and_register_candidate(
         warehouse_name=binding["warehouse"],
         dataset_version=dataset_version,
         development_cutoff=str(temporal["development_cutoff"]),
-        refit_cutoff=str(temporal["refit_cutoff"]),
-        holdout_cutoff=str(temporal["holdout_cutoff"]),
+        holdout_cutoff=holdout_cutoff,
     )
 
-    refit_sp_df = datasets["refit"].read.to_snowpark_dataframe()
-    held_out_sp_df = datasets["held_out"].read.to_snowpark_dataframe()
-    validation_sp_df = datasets["validation"].read.to_snowpark_dataframe()
+    # Read each immutable Snowflake Dataset once as a lazy Snowpark DataFrame.
+    refit_sp_df = datasets["refit"].read.to_snowpark_dataframe(only_feature_cols=False)
+    held_out_sp_df = datasets["held_out"].read.to_snowpark_dataframe(only_feature_cols=False)
+    validation_sp_df = datasets["validation"].read.to_snowpark_dataframe(only_feature_cols=False)
 
     validate_feature_columns(refit_sp_df.columns, contract)
     training_sample = refit_sp_df.select(feature_columns).limit(50)
 
+    # Materialize only the modelling columns required at the local scikit-learn fit/score boundary.
     refit_pdf = refit_sp_df.select(feature_columns + [target_col]).to_pandas()
     held_out_pdf = held_out_sp_df.select(feature_columns + [target_col]).to_pandas()
     validation_pdf = validation_sp_df.select(list(contract["features"]["categorical"])).to_pandas()
+    refit_pdf[spec["numeric_features"]] = refit_pdf[spec["numeric_features"]].astype(float)
+    held_out_pdf[spec["numeric_features"]] = held_out_pdf[spec["numeric_features"]].astype(float)
 
     pipeline = build_training_pipeline(contract)
     pipeline.fit(refit_pdf[feature_columns], refit_pdf[target_col].astype(int))
@@ -215,64 +229,51 @@ def train_and_register_candidate(
         sort_keys=True,
     )
 
-    session.sql(
-        f"""
-        INSERT INTO {database_name}.{control_schema}.PIPELINE_ATTEMPT (
-            ATTEMPT_ID, RUN_ID, RELEASE_ID, DEPLOYMENT_ID, ENVIRONMENT,
-            EXECUTION_IDENTITY, BUNDLE_NAME, BUNDLE_QUERY_ID,
-            DATASET_NAME, DATASET_VERSION, FEATURE_CONTRACT,
-            MODEL_DATABASE, MODEL_SCHEMA, MODEL_NAME, MODEL_VERSION,
-            METRICS, EVIDENCE, STATUS, FAILURE_DETAIL, STARTED_AT, COMPLETED_AT
-        )
-        SELECT
-            ?, ?, ?, ?, ?,
-            CURRENT_ROLE(), ?, LAST_QUERY_ID(),
-            ?, ?, ?,
-            ?, ?, ?, ?,
-            PARSE_JSON(?), PARSE_JSON(?), ?, NULL, CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
-        """,
-        params=[
-            attempt_id,
-            run_id,
-            release_id,
-            f"DEPLOY_{environment_name}_{clean_rel}",
-            environment_name,
-            bundle_name or f"CRISK_DEMO_TRAIN_{clean_rel}",
-            contract["datasets"]["refit"],
-            dataset_version,
-            feature_contract_str,
-            database_name,
-            binding["model_schema"],
-            contract["model"]["name"],
-            version_name,
-            metrics_json,
-            evidence_json,
-            screening_status,
-        ],
-    ).collect()
+    # Append the immutable attempt and run records using Snowpark DataFrame pushdown
+    # and F.call_function("LAST_QUERY_ID") for the single SQL-only function call.
+    attempt_row_df = session.range(1).select(
+        F.lit(attempt_id).alias("ATTEMPT_ID"),
+        F.lit(run_id).alias("RUN_ID"),
+        F.lit(release_id).alias("RELEASE_ID"),
+        F.lit(f"DEPLOY_{environment_name}_{clean_rel}").alias("DEPLOYMENT_ID"),
+        F.lit(environment_name).alias("ENVIRONMENT"),
+        F.current_role().alias("EXECUTION_IDENTITY"),
+        F.lit(bundle_name or f"CRISK_DEMO_TRAIN_{clean_rel}").alias("BUNDLE_NAME"),
+        F.call_function("LAST_QUERY_ID").alias("BUNDLE_QUERY_ID"),
+        F.lit(contract["datasets"]["refit"]).alias("DATASET_NAME"),
+        F.lit(dataset_version).alias("DATASET_VERSION"),
+        F.lit(feature_contract_str).alias("FEATURE_CONTRACT"),
+        F.lit(database_name).alias("MODEL_DATABASE"),
+        F.lit(binding["model_schema"]).alias("MODEL_SCHEMA"),
+        F.lit(contract["model"]["name"]).alias("MODEL_NAME"),
+        F.lit(version_name).alias("MODEL_VERSION"),
+        F.parse_json(F.lit(metrics_json)).alias("METRICS"),
+        F.parse_json(F.lit(evidence_json)).alias("EVIDENCE"),
+        F.lit(screening_status).alias("STATUS"),
+        F.lit(None).cast("STRING").alias("FAILURE_DETAIL"),
+        F.current_timestamp().alias("STARTED_AT"),
+        F.current_timestamp().alias("COMPLETED_AT"),
+    )
+    attempt_row_df.write.mode("append").save_as_table(
+        f"{database_name}.{control_schema}.PIPELINE_ATTEMPT"
+    )
 
-    session.sql(
-        f"""
-        INSERT INTO {database_name}.{control_schema}.PIPELINE_RUN (
-            RUN_ID, RELEASE_ID, ENVIRONMENT, STATUS, MODEL_NAME, MODEL_VERSION,
-            SOURCE_COMMIT, METRICS, DECISION_EVIDENCE, STARTED_AT, COMPLETED_AT
-        )
-        SELECT
-            ?, ?, ?, ?, ?, ?,
-            ?, PARSE_JSON(?), PARSE_JSON(?), CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP()
-        """,
-        params=[
-            run_id,
-            release_id,
-            environment_name,
-            screening_status,
-            contract["model"]["name"],
-            version_name,
-            source_state,
-            metrics_json,
-            evidence_json,
-        ],
-    ).collect()
+    run_row_df = session.range(1).select(
+        F.lit(run_id).alias("RUN_ID"),
+        F.lit(release_id).alias("RELEASE_ID"),
+        F.lit(environment_name).alias("ENVIRONMENT"),
+        F.lit(screening_status).alias("STATUS"),
+        F.lit(contract["model"]["name"]).alias("MODEL_NAME"),
+        F.lit(version_name).alias("MODEL_VERSION"),
+        F.lit(source_state).alias("SOURCE_COMMIT"),
+        F.parse_json(F.lit(metrics_json)).alias("METRICS"),
+        F.parse_json(F.lit(evidence_json)).alias("DECISION_EVIDENCE"),
+        F.current_timestamp().alias("STARTED_AT"),
+        F.current_timestamp().alias("COMPLETED_AT"),
+    )
+    run_row_df.write.mode("append").save_as_table(
+        f"{database_name}.{control_schema}.PIPELINE_RUN"
+    )
 
     return {
         "attempt_id": attempt_id,

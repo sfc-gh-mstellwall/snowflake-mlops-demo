@@ -8,6 +8,8 @@ import yaml
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
+# project.yaml is the single shared repository contract for Snowflake database,
+# schemas, roles, warehouse, compute pool, and synthetic-data horizon dates.
 DEFAULT_PROJECT_PATH = PROJECT_DIR / "project.yaml"
 
 
@@ -36,16 +38,27 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     return payload
 
 
+def lookup_dotted(config: Mapping[str, Any], dotted_path: str) -> Any:
+    """Resolve a dotted key path (such as 'data.drift_start_date') against project.yaml."""
+    current: Any = config
+    for part in dotted_path.split("."):
+        current = current[part]
+    return current
+
+
 def load_project(path: Path | None = None) -> dict[str, Any]:
+    """Load project.yaml so notebooks and jobs share one database/schema/role contract."""
     return _load_yaml(path or DEFAULT_PROJECT_PATH)
 
 
 def load_environment_map(project: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Load config/environments.yaml to map DEV, TEST (Pre-Prod), and PROD to their schemas and guardrails."""
     config = project or load_project()
     return _load_yaml(PROJECT_DIR / config["contracts"]["environments"])
 
 
 def load_workflow_contract(project: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Load config/workflow.yaml to get the frozen feature list, estimator spec, and screening gates."""
     config = project or load_project()
     return _load_yaml(PROJECT_DIR / config["contracts"]["workflow"])
 

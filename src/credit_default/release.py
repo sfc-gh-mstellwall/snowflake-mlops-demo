@@ -1,15 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Mapping
 
-from .contracts import load_project, resolve_environment
+from snowflake.snowpark import functions as F
 
-
-def _lookup(config: Mapping[str, Any], dotted_path: str) -> Any:
-    current: Any = config
-    for part in dotted_path.split("."):
-        current = current[part]
-    return current
+# Load project.yaml and config/environments.yaml via contracts.py so each logical
+# environment resolves its dedicated Feature Store, Dataset, Model, and Bundle schemas.
+from .contracts import load_project, lookup_dotted, resolve_environment
 
 
 def resolve_binding(
@@ -20,17 +19,17 @@ def resolve_binding(
     environment = resolve_environment(environment_name, config)
     database = config["snowflake"]["database"]
     schema_ref = environment["schema_ref"]
-    schema = _lookup(config, schema_ref)
+    schema = lookup_dotted(config, schema_ref)
     binding = {
         "environment": environment["name"],
         "presentation_environment": environment["presentation_name"],
         "database": database,
         "schema": schema,
         "feature_store_schema": environment["feature_store_schema"],
-        "experiment_schema": _lookup(config, environment["experiment_schema_ref"]),
-        "dataset_schema": _lookup(config, environment["dataset_schema_ref"]),
-        "model_schema": _lookup(config, environment["model_schema_ref"]),
-        "bundle_schema": _lookup(config, environment["bundle_schema_ref"]),
+        "experiment_schema": lookup_dotted(config, environment["experiment_schema_ref"]),
+        "dataset_schema": lookup_dotted(config, environment["dataset_schema_ref"]),
+        "model_schema": lookup_dotted(config, environment["model_schema_ref"]),
+        "bundle_schema": lookup_dotted(config, environment["bundle_schema_ref"]),
         "warehouse": config["snowflake"]["warehouse"],
         "compute_pool": config["snowflake"]["compute_pool"],
         "may_approve_future_prod_model": bool(
@@ -83,29 +82,25 @@ def record_source_release(
     runtime_contract: str = "V2.9-CPU-PY3.11",
     project: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Insert an immutable reviewed source release into CONTROL.SOURCE_RELEASE."""
+    """Insert an immutable reviewed source release into CONTROL.SOURCE_RELEASE via Snowpark pushdown."""
     config = project or load_project()
     database = config["snowflake"]["database"]
     control_schema = config["snowflake"]["schemas"]["control"]
-    session.sql(
-        f"""
-        INSERT INTO {database}.{control_schema}.SOURCE_RELEASE (
-            RELEASE_ID, SOURCE_COMMIT, PAYLOAD_DIGEST, MANIFEST_DIGEST,
-            SPECIFICATION_DIGEST, RUNTIME_CONTRACT, APPROVED_SOURCE_IDENTITY,
-            CREATED_BY, CREATED_AT
-        )
-        SELECT ?, ?, ?, ?, ?, ?, ?, CURRENT_ROLE(), CURRENT_TIMESTAMP()
-        """,
-        params=[
-            release_id,
-            source_commit,
-            payload_digest,
-            manifest_digest,
-            specification_digest,
-            runtime_contract,
-            f"{release_id}:{source_commit}",
-        ],
-    ).collect()
+
+    release_row_df = session.range(1).select(
+        F.lit(release_id).alias("RELEASE_ID"),
+        F.lit(source_commit).alias("SOURCE_COMMIT"),
+        F.lit(payload_digest).alias("PAYLOAD_DIGEST"),
+        F.lit(manifest_digest).alias("MANIFEST_DIGEST"),
+        F.lit(specification_digest).alias("SPECIFICATION_DIGEST"),
+        F.lit(runtime_contract).alias("RUNTIME_CONTRACT"),
+        F.lit(f"{release_id}:{source_commit}").alias("APPROVED_SOURCE_IDENTITY"),
+        F.current_role().alias("CREATED_BY"),
+        F.current_timestamp().alias("CREATED_AT"),
+    )
+    release_row_df.write.mode("append").save_as_table(
+        f"{database}.{control_schema}.SOURCE_RELEASE"
+    )
     return {
         "release_id": release_id,
         "source_commit": source_commit,
@@ -123,10 +118,7 @@ def record_environment_deployment(
     pipeline_validation_status: str = "PENDING",
     project: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Record a release-specific Code Bundle deployment in CONTROL.ENVIRONMENT_DEPLOYMENT."""
-    import hashlib
-    import json
-
+    """Record a release-specific Code Bundle deployment in CONTROL.ENVIRONMENT_DEPLOYMENT via Snowpark pushdown."""
     config = project or load_project()
     binding = resolve_binding(environment_name, config)
     database = binding["database"]
@@ -137,26 +129,21 @@ def record_environment_deployment(
         json.dumps(binding, sort_keys=True).encode("utf-8")
     ).hexdigest()
 
-    session.sql(
-        f"""
-        INSERT INTO {database}.{control_schema}.ENVIRONMENT_DEPLOYMENT (
-            DEPLOYMENT_ID, RELEASE_ID, ENVIRONMENT, BINDING_DIGEST,
-            BUNDLE_DATABASE, BUNDLE_SCHEMA, BUNDLE_NAME,
-            DEPLOYED_BY, PIPELINE_VALIDATION_STATUS, DEPLOYED_AT
-        )
-        SELECT ?, ?, ?, ?, ?, ?, ?, CURRENT_ROLE(), ?, CURRENT_TIMESTAMP()
-        """,
-        params=[
-            deployment_id,
-            release_id,
-            environment_name,
-            binding_digest,
-            database,
-            binding["bundle_schema"],
-            bundle_name,
-            pipeline_validation_status,
-        ],
-    ).collect()
+    deployment_row_df = session.range(1).select(
+        F.lit(deployment_id).alias("DEPLOYMENT_ID"),
+        F.lit(release_id).alias("RELEASE_ID"),
+        F.lit(environment_name).alias("ENVIRONMENT"),
+        F.lit(binding_digest).alias("BINDING_DIGEST"),
+        F.lit(database).alias("BUNDLE_DATABASE"),
+        F.lit(binding["bundle_schema"]).alias("BUNDLE_SCHEMA"),
+        F.lit(bundle_name).alias("BUNDLE_NAME"),
+        F.current_role().alias("DEPLOYED_BY"),
+        F.lit(pipeline_validation_status).alias("PIPELINE_VALIDATION_STATUS"),
+        F.current_timestamp().alias("DEPLOYED_AT"),
+    )
+    deployment_row_df.write.mode("append").save_as_table(
+        f"{database}.{control_schema}.ENVIRONMENT_DEPLOYMENT"
+    )
     return {
         "deployment_id": deployment_id,
         "release_id": release_id,
@@ -166,4 +153,3 @@ def record_environment_deployment(
         "bundle_name": bundle_name,
         "pipeline_validation_status": pipeline_validation_status,
     }
-

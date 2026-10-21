@@ -150,7 +150,7 @@ def evaluate_candidate(
 
     target_col = contract["model"]["target_column"]
     categorical_features = list(contract["features"]["categorical"])
-    gates_cfg = contract["screening_gates"]
+    gates_cfg = contract.get("screening") or contract["screening_gates"]
     support_cfg = gates_cfg["segment_support"]
 
     y_true = held_out_pdf[target_column := target_col].astype(int).to_numpy()

@@ -4,6 +4,10 @@ import json
 import uuid
 from typing import Any, Mapping
 
+from snowflake.snowpark import functions as F
+
+# Load project.yaml via contracts.py so approval and serving-selection tables
+# resolve against the configured database and CONTROL schema.
 from .contracts import load_project
 
 
@@ -46,7 +50,7 @@ def record_promotion_decision(
     approver: str | None = None,
     project: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Evaluate and persist an accountable owner decision in CONTROL.PROMOTION_DECISION."""
+    """Evaluate and persist an accountable owner decision in CONTROL.PROMOTION_DECISION via Snowpark pushdown."""
     config = project or load_project()
     database = config["snowflake"]["database"]
     control_schema = config["snowflake"]["schemas"]["control"]
@@ -64,23 +68,20 @@ def record_promotion_decision(
     result["decision_id"] = decision_id
     result["run_id"] = run_id
 
-    session.sql(
-        f"""
-        INSERT INTO {database}.{control_schema}.PROMOTION_DECISION (
-            DECISION_ID, RUN_ID, CANDIDATE_VERSION, INCUMBENT_VERSION,
-            DECISION, CHECKS, DECIDED_BY, DECIDED_AT
-        )
-        SELECT ?, ?, ?, ?, ?, PARSE_JSON(?), CURRENT_ROLE(), CURRENT_TIMESTAMP()
-        """,
-        params=[
-            decision_id,
-            run_id,
-            candidate_version,
-            incumbent_version,
-            result["decision"],
-            json.dumps(result["checks"], sort_keys=True),
-        ],
-    ).collect()
+    checks_json = json.dumps(result["checks"], sort_keys=True)
+    decision_row_df = session.range(1).select(
+        F.lit(decision_id).alias("DECISION_ID"),
+        F.lit(run_id).alias("RUN_ID"),
+        F.lit(candidate_version).alias("CANDIDATE_VERSION"),
+        F.lit(incumbent_version).cast("STRING").alias("INCUMBENT_VERSION"),
+        F.lit(result["decision"]).alias("DECISION"),
+        F.parse_json(F.lit(checks_json)).alias("CHECKS"),
+        F.current_role().alias("DECIDED_BY"),
+        F.current_timestamp().alias("DECIDED_AT"),
+    )
+    decision_row_df.write.mode("append").save_as_table(
+        f"{database}.{control_schema}.PROMOTION_DECISION"
+    )
     return result
 
 
@@ -98,11 +99,13 @@ def activate_serving(
     database = config["snowflake"]["database"]
     control_schema = config["snowflake"]["schemas"]["control"]
 
-    rows = session.sql(
-        f"CALL {database}.{control_schema}.ACTIVATE_SERVING(?, ?, ?, ?)",
-        params=[candidate_version, decision_id, mode.upper(), int(candidate_weight)],
-    ).collect()
-    status_message = rows[0][0] if rows else "unknown"
+    status_message = session.call(
+        f"{database}.{control_schema}.ACTIVATE_SERVING",
+        candidate_version,
+        decision_id,
+        mode.upper(),
+        int(candidate_weight),
+    )
     return {
         "status_message": status_message,
         "activated": str(status_message).startswith("activated"),
@@ -124,11 +127,10 @@ def recover_serving(
     database = config["snowflake"]["database"]
     control_schema = config["snowflake"]["schemas"]["control"]
 
-    rows = session.sql(
-        f"CALL {database}.{control_schema}.RECOVER_SERVING(?)",
-        params=[environment_name],
-    ).collect()
-    status_message = rows[0][0] if rows else "unknown"
+    status_message = session.call(
+        f"{database}.{control_schema}.RECOVER_SERVING",
+        environment_name,
+    )
     return {
         "status_message": status_message,
         "recovered": str(status_message).startswith("recovered"),

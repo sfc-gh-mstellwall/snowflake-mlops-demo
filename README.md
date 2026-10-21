@@ -50,7 +50,7 @@ The repository showcases the seven-stage MLOps loop across four Snowflake Worksp
 
 | Notebook | MLOps Stages | What It Demonstrates |
 |---|---|---|
-| `notebooks/01_credit_default_exploration.ipynb` | **1. Explore** | Source contract checks (`%%sql`), Snowpark pandas key/grain/null verification, 365-day lookback coverage, and 90-day delayed label finality (`FINALISED` vs. `PENDING`). |
+| `notebooks/01_credit_default_exploration.ipynb` | **1. Explore** | Source contract checks (`%%sql`), Snowpark DataFrame API key/grain/null verification, 365-day lookback coverage, and 90-day delayed label finality (`FINALISED` vs. `PENDING`). |
 | `notebooks/02_credit_default_feature_engineering.ipynb` | **2. Prepare** | Feature Store (`Entity("CREDIT_ACCOUNT")`, 3 tiled `FeatureView`s + 3 Snowpark-derived `FeatureView`s registered as `V01`), point-in-time spine cutoffs with 90-day finality purge, and immutable `fs.generate_dataset()` (`CREDIT_DEVELOPMENT`, `CREDIT_VALIDATION`) with upstream lineage. |
 | `notebooks/03_credit_default_model_experiment.ipynb` | **3. Train & Screen (DEV)** | `ExperimentTracking` runs (`LogisticRegression`, `HistGradientBoostingClassifier`, sequential `Tuner` HPO trials), manual presenter holdout gates, refit on `CREDIT_REFIT`, evaluation on `CREDIT_HELD_OUT`, and `Model Registry` logging with lineage. |
 | `notebooks/04_credit_default_release_serving_and_monitoring.ipynb` | **4. Review & Approve → 5. Serve → 6. Monitor → 7. Improve** | Release recording (`SOURCE_RELEASE`, `ENVIRONMENT_DEPLOYMENT`), unattended candidate creation in `Pre-Prod` (`TEST`) and `PROD` (`PIPELINE_ATTEMPT`), fail-closed owner approval (`PROMOTION_DECISION`), `ACTIVATE_SERVING` for **Warehouse Batch** (`SET ALIAS = PRODUCTION`) and **Online Gateway** (`SHADOW` vs. `SPLIT`), delayed 90-day outcome replay (`V_PREDICTION_OUTCOME_MATURITY`), and full-path rollback (`RECOVER_SERVING`). |
@@ -141,7 +141,7 @@ The generated `build/` directory is intentionally ignored by Git. Commit changes
 
 After Phase 1 passes, open `notebooks/01_credit_default_exploration.ipynb` in the same Git-backed Workspace and connect it to the Container Runtime CPU 2.9 notebook service.
 
-Run the notebook from top to bottom. It uses Snowpark pandas for bounded interactive exploration, with a native Workspace SQL cell for metadata inspection, to:
+Run the notebook from top to bottom. It uses the Snowpark DataFrame API (defining each source table once and pushing down aggregations to Snowflake), with a native Workspace SQL cell for metadata inspection, to:
 
 - Inspect customer and facility dimensions before any label relation.
 - Establish the grain, keys, relationships, and date coverage of each source fact.

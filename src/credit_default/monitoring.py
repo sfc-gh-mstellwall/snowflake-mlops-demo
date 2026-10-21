@@ -4,6 +4,10 @@ from datetime import date, timedelta
 import uuid
 from typing import Any, Iterable, Mapping
 
+from snowflake.snowpark import functions as F
+
+# Load project.yaml and config/workflow.yaml via contracts.py so batch scoring
+# and delayed-outcome replay use the shared schemas, horizon dates, and screening gates.
 from .contracts import (
     expected_feature_columns,
     expected_feature_views,
@@ -129,7 +133,6 @@ def run_warehouse_batch_scoring(
 ) -> dict[str, Any]:
     """Score RAW.SCORING_POPULATION on a warehouse using the aliased Registry model and write to CONTROL.PREDICTION_RECORD."""
     from snowflake.ml.registry import Registry
-    from snowflake.snowpark import functions as F
 
     config = project or load_project()
     contract = load_workflow_contract(config)
@@ -150,9 +153,15 @@ def run_warehouse_batch_scoring(
         warehouse_name=binding["warehouse"],
     )
 
+    # Single point of definition for the scoring population view and prediction ledger table.
+    scoring_population = session.table(f"{database}.{raw_schema}.SCORING_POPULATION")
+    prediction_table_fqn = f"{database}.{control_schema}.PREDICTION_RECORD"
+    prediction_records = session.table(prediction_table_fqn)
+
     spine_df = (
-        session.table(f"{database}.{raw_schema}.SCORING_POPULATION")
-        .filter(F.col("OBSERVATION_DATE") == F.to_date(F.lit(observation_date)))
+        scoring_population.filter(
+            F.col("OBSERVATION_DATE") == F.to_date(F.lit(observation_date))
+        )
         .with_column("OBSERVATION_TS", F.to_timestamp_ntz("OBSERVATION_DATE"))
         .select("OBSERVATION_ID", "ACCOUNT_ID", "OBSERVATION_DATE", "OBSERVATION_TS")
     )
@@ -172,10 +181,14 @@ def run_warehouse_batch_scoring(
     resolved_version = mv.version_name
 
     scored_df = mv.run(
-        scoring_features_df.select(["OBSERVATION_ID", "ACCOUNT_ID", "OBSERVATION_DATE"] + feature_columns),
+        scoring_features_df.select(
+            ["OBSERVATION_ID", "ACCOUNT_ID", "OBSERVATION_DATE"] + feature_columns
+        ),
         function_name="predict_proba",
     )
-    prob_cols = [c for c in scored_df.columns if c.upper().endswith("_1") or "PROBA_1" in c.upper()]
+    prob_cols = [
+        c for c in scored_df.columns if c.upper().endswith("_1") or "PROBA_1" in c.upper()
+    ]
     prob_col = prob_cols[0] if prob_cols else scored_df.columns[-1]
 
     batch_id = f"BATCH_{observation_date.replace('-', '')}_{uuid.uuid4().hex[:6].upper()}"
@@ -190,18 +203,14 @@ def run_warehouse_batch_scoring(
         F.lit(resolved_version).alias("MODEL_VERSION"),
         F.lit(release_id).alias("RELEASE_ID"),
         F.col(prob_col).cast("NUMBER(10,6)").alias("SCORE"),
-        F.iff(F.col(prob_col) >= F.lit(threshold), 1, 0).cast("NUMBER(1,0)").alias("PREDICTION_CLASS"),
+        F.iff(F.col(prob_col) >= F.lit(threshold), 1, 0)
+        .cast("NUMBER(1,0)")
+        .alias("PREDICTION_CLASS"),
         F.lit(batch_id).alias("BATCH_ID"),
         F.lit(feature_contract_str).alias("FEATURE_CONTRACT"),
     )
-    records_df.write.mode("append").save_as_table(
-        f"{database}.{control_schema}.PREDICTION_RECORD"
-    )
-    row_count = (
-        session.table(f"{database}.{control_schema}.PREDICTION_RECORD")
-        .filter(F.col("BATCH_ID") == batch_id)
-        .count()
-    )
+    records_df.write.mode("append").save_as_table(prediction_table_fqn)
+    row_count = prediction_records.filter(F.col("BATCH_ID") == batch_id).count()
     return {
         "batch_id": batch_id,
         "observation_date": observation_date,
@@ -220,7 +229,7 @@ def evaluate_delayed_outcomes(
     drift_detected: bool = False,
     project: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Join CONTROL.PREDICTION_RECORD to RAW.ACCOUNT_OBSERVATION as of replay_date without treating pending labels as 0."""
+    """Join CONTROL.PREDICTION_RECORD to RAW.ACCOUNT_OBSERVATION via Snowpark pushdown without treating pending labels as 0."""
     from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
 
     config = project or load_project()
@@ -234,69 +243,106 @@ def evaluate_delayed_outcomes(
             f"Replay date {replay_date} exceeds generated-data horizon {as_of_horizon}"
         )
 
-    version_filter = "AND p.MODEL_VERSION = ?" if model_version else ""
-    params = [replay_date, replay_date] + ([model_version] if model_version else [])
-    joined_pdf = session.sql(
-        f"""
-        SELECT
-            p.PREDICTION_ID,
-            p.ACCOUNT_ID,
-            p.OBSERVATION_DATE,
-            p.MODEL_VERSION,
-            p.SCORE::FLOAT AS SCORE,
-            o.OUTCOME_FINALITY_DATE,
-            CASE
-                WHEN o.ACCOUNT_ID IS NULL THEN 'unmatched'
-                WHEN ?::DATE < o.OUTCOME_FINALITY_DATE THEN 'pending'
-                ELSE 'matched'
-            END AS MATCH_STATUS,
-            CASE
-                WHEN o.ACCOUNT_ID IS NULL THEN '{UNKNOWN_LABEL}'
-                WHEN ?::DATE < o.OUTCOME_FINALITY_DATE THEN '{PENDING_LABEL}'
-                ELSE '{FINAL_LABEL}'
-            END AS LABEL_STATUS,
-            CASE
-                WHEN o.ACCOUNT_ID IS NOT NULL AND ?::DATE >= o.OUTCOME_FINALITY_DATE
-                THEN o.DEFAULT_WITHIN_90D
-                ELSE NULL
-            END AS MATURED_DEFAULT_WITHIN_90D
-        FROM {database}.{control_schema}.PREDICTION_RECORD p
-        LEFT JOIN {database}.{raw_schema}.ACCOUNT_OBSERVATION o
-          ON p.ACCOUNT_ID = o.ACCOUNT_ID
-         AND p.OBSERVATION_DATE = o.OBSERVATION_DATE
-        WHERE p.OBSERVATION_DATE <= ?::DATE
-          {version_filter}
-        """,
-        params=[replay_date, replay_date, replay_date, replay_date]
-        + ([model_version] if model_version else []),
-    ).to_pandas()
+    # Single point of definition for the prediction ledger and ground-truth observation tables.
+    predictions_df = session.table(f"{database}.{control_schema}.PREDICTION_RECORD")
+    observations_df = session.table(f"{database}.{raw_schema}.ACCOUNT_OBSERVATION").select(
+        F.col("ACCOUNT_ID").alias("OBS_ACCOUNT_ID"),
+        F.col("OBSERVATION_DATE").alias("OBS_DATE"),
+        F.col("OUTCOME_FINALITY_DATE"),
+        F.col("DEFAULT_WITHIN_90D"),
+    )
 
+    replay_date_expr = F.to_date(F.lit(replay_date))
+    filtered_predictions = predictions_df.filter(
+        F.col("OBSERVATION_DATE") <= replay_date_expr
+    )
+    if model_version:
+        filtered_predictions = filtered_predictions.filter(
+            F.col("MODEL_VERSION") == F.lit(model_version)
+        )
+
+    joined_df = (
+        filtered_predictions.join(
+            observations_df,
+            (filtered_predictions["ACCOUNT_ID"] == observations_df["OBS_ACCOUNT_ID"])
+            & (filtered_predictions["OBSERVATION_DATE"] == observations_df["OBS_DATE"]),
+            join_type="left",
+        )
+        .select(
+            F.col("PREDICTION_ID"),
+            F.col("ACCOUNT_ID"),
+            F.col("OBSERVATION_DATE"),
+            F.col("MODEL_VERSION"),
+            F.col("SCORE").cast("FLOAT").alias("SCORE"),
+            F.col("OUTCOME_FINALITY_DATE"),
+            F.when(F.col("OBS_ACCOUNT_ID").is_null(), F.lit("unmatched"))
+            .when(replay_date_expr < F.col("OUTCOME_FINALITY_DATE"), F.lit("pending"))
+            .otherwise(F.lit("matched"))
+            .alias("MATCH_STATUS"),
+            F.when(F.col("OBS_ACCOUNT_ID").is_null(), F.lit(UNKNOWN_LABEL))
+            .when(replay_date_expr < F.col("OUTCOME_FINALITY_DATE"), F.lit(PENDING_LABEL))
+            .otherwise(F.lit(FINAL_LABEL))
+            .alias("LABEL_STATUS"),
+            F.when(
+                F.col("OBS_ACCOUNT_ID").is_not_null()
+                & (replay_date_expr >= F.col("OUTCOME_FINALITY_DATE")),
+                F.col("DEFAULT_WITHIN_90D"),
+            )
+            .otherwise(F.lit(None))
+            .alias("MATURED_DEFAULT_WITHIN_90D"),
+        )
+    )
+
+    # Push down the coverage aggregation to Snowflake; only 1 summary row is returned.
+    coverage_row = (
+        joined_df.agg(
+            F.count("*").alias("PREDICTIONS"),
+            F.coalesce(
+                F.sum(F.iff(F.col("LABEL_STATUS") == F.lit(FINAL_LABEL), 1, 0)), F.lit(0)
+            ).alias("MATCHED_FINAL"),
+            F.coalesce(
+                F.sum(F.iff(F.col("LABEL_STATUS") == F.lit(PENDING_LABEL), 1, 0)), F.lit(0)
+            ).alias("PENDING"),
+            F.coalesce(
+                F.sum(F.iff(F.col("MATCH_STATUS") == F.lit("unmatched"), 1, 0)), F.lit(0)
+            ).alias("UNMATCHED"),
+        )
+        .to_pandas()
+        .iloc[0]
+    )
     coverage = {
-        "predictions": int(len(joined_pdf)),
-        "matched_final": int((joined_pdf["LABEL_STATUS"] == FINAL_LABEL).sum()),
-        "pending": int((joined_pdf["LABEL_STATUS"] == PENDING_LABEL).sum()),
-        "unmatched": int((joined_pdf["MATCH_STATUS"] == "unmatched").sum()),
+        "predictions": int(coverage_row["PREDICTIONS"]),
+        "matched_final": int(coverage_row["MATCHED_FINAL"]),
+        "pending": int(coverage_row["PENDING"]),
+        "unmatched": int(coverage_row["UNMATCHED"]),
     }
-    matured = joined_pdf[joined_pdf["LABEL_STATUS"] == FINAL_LABEL]
+
     metrics: dict[str, float | None] = {
         "roc_auc": None,
         "average_precision": None,
         "brier_score": None,
     }
     performance_degraded = False
-    if len(matured) > 0 and matured["MATURED_DEFAULT_WITHIN_90D"].nunique() > 1:
-        y_true = matured["MATURED_DEFAULT_WITHIN_90D"].astype(int).to_numpy()
-        y_score = matured["SCORE"].astype(float).to_numpy()
-        metrics = {
-            "roc_auc": float(roc_auc_score(y_true, y_score)),
-            "average_precision": float(average_precision_score(y_true, y_score)),
-            "brier_score": float(brier_score_loss(y_true, y_score)),
-        }
-        gates = contract["screening_gates"]
-        performance_degraded = bool(
-            metrics["roc_auc"] < float(gates["minimum_roc_auc"])
-            or metrics["brier_score"] > float(gates["maximum_brier_score"])
+    if coverage["matched_final"] > 0:
+        # Filter in Snowflake so only matured final-label rows cross to scikit-learn.
+        matured = (
+            joined_df.filter(F.col("LABEL_STATUS") == F.lit(FINAL_LABEL))
+            .select("SCORE", "MATURED_DEFAULT_WITHIN_90D")
+            .to_pandas()
         )
+        if len(matured) > 0 and matured["MATURED_DEFAULT_WITHIN_90D"].nunique() > 1:
+            y_true = matured["MATURED_DEFAULT_WITHIN_90D"].astype(int).to_numpy()
+            y_score = matured["SCORE"].astype(float).to_numpy()
+            metrics = {
+                "roc_auc": float(roc_auc_score(y_true, y_score)),
+                "average_precision": float(average_precision_score(y_true, y_score)),
+                "brier_score": float(brier_score_loss(y_true, y_score)),
+            }
+            gates = contract.get("screening") or contract["screening_gates"]
+            performance_degraded = bool(
+                metrics["roc_auc"] < float(gates["minimum_roc_auc"])
+                or metrics["brier_score"] > float(gates["maximum_brier_score"])
+            )
 
     rec = recommended_action(
         drift_detected=drift_detected,
@@ -321,22 +367,26 @@ def record_operational_action(
     prediction_id: str | None = None,
     project: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Record a reviewed monitoring action in CONTROL.OPERATIONAL_ACTION."""
+    """Record a reviewed monitoring action in CONTROL.OPERATIONAL_ACTION via Snowpark pushdown."""
     config = project or load_project()
     database = config["snowflake"]["database"]
     control_schema = config["snowflake"]["schemas"]["control"]
     action_id = f"ACT_{uuid.uuid4().hex[:10].upper()}"
 
-    session.sql(
-        f"""
-        INSERT INTO {database}.{control_schema}.OPERATIONAL_ACTION (
-            ACTION_ID, PREDICTION_ID, MODEL_VERSION, ACTION, RATIONALE,
-            LAUNCHES_TRAINING, CHANGES_INCUMBENT, RECORDED_BY, RECORDED_AT
-        )
-        SELECT ?, ?, ?, ?, ?, FALSE, FALSE, CURRENT_ROLE(), CURRENT_TIMESTAMP()
-        """,
-        params=[action_id, prediction_id, model_version, action, rationale],
-    ).collect()
+    action_row_df = session.range(1).select(
+        F.lit(action_id).alias("ACTION_ID"),
+        F.lit(prediction_id).cast("STRING").alias("PREDICTION_ID"),
+        F.lit(model_version).alias("MODEL_VERSION"),
+        F.lit(action).alias("ACTION"),
+        F.lit(rationale).alias("RATIONALE"),
+        F.lit(False).alias("LAUNCHES_TRAINING"),
+        F.lit(False).alias("CHANGES_INCUMBENT"),
+        F.current_role().alias("RECORDED_BY"),
+        F.current_timestamp().alias("RECORDED_AT"),
+    )
+    action_row_df.write.mode("append").save_as_table(
+        f"{database}.{control_schema}.OPERATIONAL_ACTION"
+    )
     return {
         "action_id": action_id,
         "model_version": model_version,

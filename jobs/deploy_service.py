@@ -6,9 +6,13 @@ import sys
 import uuid
 from pathlib import Path
 
+from snowflake.snowpark import functions as F
+
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
+# Load project.yaml and config/workflow.yaml via credit_default.contracts so
+# the SPCS service deployment binds to the environment's compute pool and model schema.
 from credit_default.contracts import (  # noqa: E402
     expected_feature_columns,
     get_session,
@@ -54,10 +58,10 @@ def main(argv: list[str] | None = None) -> int:
     service_short = f"CREDIT_DEFAULT_SVC_{clean_ver}"
     service_fqn = f"{database}.{binding['schema']}.{service_short}"
 
-    existing = session.sql(
+    existing_count = session.sql(
         f"SHOW SERVICES LIKE '{service_short}' IN SCHEMA {database}.{binding['schema']}"
-    ).collect()
-    if not existing:
+    ).count()
+    if existing_count == 0:
         mv.create_service(
             service_name=service_fqn,
             service_compute_pool=binding["compute_pool"],
@@ -72,35 +76,35 @@ def main(argv: list[str] | None = None) -> int:
         version=args.dataset_version,
     )
     smoke_sample = (
-        held_out_ds.read.to_snowpark_dataframe()
+        held_out_ds.read.to_snowpark_dataframe(only_feature_cols=False)
         .select(feature_columns)
         .limit(5)
     )
-    mv.run(
+    # Push down the smoke-test invocation against the SPCS service without collecting rows to Python.
+    smoke_count = mv.run(
         smoke_sample,
         function_name="predict_proba",
         service_name=service_fqn,
-    ).collect()
+    ).count()
+    if smoke_count == 0:
+        raise RuntimeError(f"Smoke test returned 0 rows for service {service_fqn}")
 
     deployment_id = f"SVC_DEP_{uuid.uuid4().hex[:10].upper()}"
-    session.sql(
-        f"""
-        INSERT INTO {database}.{control_schema}.SERVICE_DEPLOYMENT (
-            DEPLOYMENT_ID, ENVIRONMENT, MODEL_NAME, MODEL_VERSION,
-            SERVICE_NAME, COMPUTE_POOL, AUTOCAPTURE_ENABLED,
-            STATUS, DEPLOYED_BY, DEPLOYED_AT
-        )
-        SELECT ?, ?, ?, ?, ?, ?, TRUE, 'SMOKE_TESTED', CURRENT_ROLE(), CURRENT_TIMESTAMP()
-        """,
-        params=[
-            deployment_id,
-            args.environment,
-            model_name,
-            args.version,
-            service_fqn,
-            binding["compute_pool"],
-        ],
-    ).collect()
+    deployment_row_df = session.range(1).select(
+        F.lit(deployment_id).alias("DEPLOYMENT_ID"),
+        F.lit(args.environment).alias("ENVIRONMENT"),
+        F.lit(model_name).alias("MODEL_NAME"),
+        F.lit(args.version).alias("MODEL_VERSION"),
+        F.lit(service_fqn).alias("SERVICE_NAME"),
+        F.lit(binding["compute_pool"]).alias("COMPUTE_POOL"),
+        F.lit(True).alias("AUTOCAPTURE_ENABLED"),
+        F.lit("SMOKE_TESTED").alias("STATUS"),
+        F.current_role().alias("DEPLOYED_BY"),
+        F.current_timestamp().alias("DEPLOYED_AT"),
+    )
+    deployment_row_df.write.mode("append").save_as_table(
+        f"{database}.{control_schema}.SERVICE_DEPLOYMENT"
+    )
 
     payload = {
         "deployment_id": deployment_id,
