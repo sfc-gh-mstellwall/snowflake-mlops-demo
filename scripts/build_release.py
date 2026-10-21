@@ -14,12 +14,14 @@ DEFAULT_OUTPUT_DIR = PROJECT_DIR / "build" / "releases"
 
 ALLOWLISTED_PATHS = (
     "jobs/train.py",
+    "jobs/deploy_service.py",
     "code_bundle.yml",
     "config/environments.yaml",
     "config/workflow.yaml",
     "project.yaml",
     "src/credit_default/__init__.py",
     "src/credit_default/contracts.py",
+    "src/credit_default/features.py",
     "src/credit_default/evaluation.py",
     "src/credit_default/evidence.py",
     "src/credit_default/training.py",

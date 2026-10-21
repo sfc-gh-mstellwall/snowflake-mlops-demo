@@ -111,6 +111,28 @@ CREATE TABLE IF NOT EXISTS SERVING_SELECTION (
   ACTIVE BOOLEAN COMMENT 'Whether callers should resolve this selection'
 ) COMMENT = 'Explicit live-model selector; never implied by screening accepted';
 
+CREATE TABLE IF NOT EXISTS SERVICE_DEPLOYMENT (
+  DEPLOYMENT_ID VARCHAR COMMENT 'Unique SPCS model-service deployment receipt',
+  ENVIRONMENT VARCHAR COMMENT 'TEST or PROD environment',
+  MODEL_NAME VARCHAR COMMENT 'Registered model collection name',
+  MODEL_VERSION VARCHAR COMMENT 'Exact registered model version deployed',
+  SERVICE_NAME VARCHAR COMMENT 'Fully qualified SPCS service name',
+  COMPUTE_POOL VARCHAR COMMENT 'Compute pool hosting the service',
+  AUTOCAPTURE_ENABLED BOOLEAN COMMENT 'Whether Auto Capture is enabled for Gateway Model Monitors',
+  STATUS VARCHAR COMMENT 'SMOKE_TESTED or FAILED',
+  DEPLOYED_BY VARCHAR COMMENT 'Principal that executed the deployment entrypoint',
+  DEPLOYED_AT TIMESTAMP_NTZ COMMENT 'Deployment timestamp'
+) COMMENT = 'Durable receipt written by jobs/deploy_service.py before Gateway routing moves';
+
+GRANT SELECT ON TABLE {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVICE_DEPLOYMENT
+  TO ROLE {{DEVELOPER_ROLE}};
+GRANT SELECT, INSERT ON TABLE {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVICE_DEPLOYMENT
+  TO ROLE {{ENGINEER_ROLE}};
+GRANT SELECT ON TABLE {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVICE_DEPLOYMENT
+  TO ROLE {{PROD_OWNER_ROLE}};
+GRANT SELECT, INSERT ON TABLE {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVICE_DEPLOYMENT
+  TO ROLE {{SERVICE_ROLE}};
+
 GRANT SELECT ON TABLE {{DATABASE}}.{{CONTROL_SCHEMA}}.SOURCE_RELEASE
   TO ROLE {{DEVELOPER_ROLE}};
 GRANT SELECT, INSERT ON TABLE {{DATABASE}}.{{CONTROL_SCHEMA}}.SOURCE_RELEASE
@@ -165,6 +187,200 @@ REVOKE INSERT, UPDATE ON TABLE {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVING_SELECTION
   FROM ROLE {{ENGINEER_ROLE}};
 REVOKE INSERT, UPDATE ON TABLE {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVING_SELECTION
   FROM ROLE {{SERVICE_ROLE}};
+
+-- Owner's-rights serving activation and recovery procedures (owned by PROD_OWNER_ROLE)
+GRANT CREATE PROCEDURE ON SCHEMA {{DATABASE}}.{{CONTROL_SCHEMA}} TO ROLE {{PROD_OWNER_ROLE}};
+GRANT OWNERSHIP ON SCHEMA {{DATABASE}}.{{PROD_SCHEMA}} TO ROLE {{PROD_OWNER_ROLE}} COPY CURRENT GRANTS;
+
+USE ROLE {{PROD_OWNER_ROLE}};
+USE SCHEMA {{DATABASE}}.{{CONTROL_SCHEMA}};
+
+CREATE OR REPLACE PROCEDURE {{DATABASE}}.{{CONTROL_SCHEMA}}.ACTIVATE_SERVING(
+  P_VERSION VARCHAR,
+  P_DECISION_ID VARCHAR,
+  P_MODE VARCHAR,
+  P_CANDIDATE_WEIGHT NUMBER
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+  prev_selection_id VARCHAR;
+  incumbent_version VARCHAR;
+  feature_contract VARCHAR;
+  spec VARCHAR;
+BEGIN
+  IF (NOT REGEXP_LIKE(:P_VERSION, '^[A-Z0-9_]+$')) THEN
+    RETURN 'rejected: invalid version identifier';
+  END IF;
+  IF (:P_MODE NOT IN ('BATCH', 'SHADOW', 'SPLIT')) THEN
+    RETURN 'rejected: mode must be BATCH, SHADOW, or SPLIT';
+  END IF;
+  IF (:P_CANDIDATE_WEIGHT < 1 OR :P_CANDIDATE_WEIGHT > 100) THEN
+    RETURN 'rejected: weight must be 1-100';
+  END IF;
+
+  -- 1. Verify accountable owner approval in PROMOTION_DECISION for this exact version.
+  IF (NOT EXISTS (
+    SELECT 1
+    FROM {{DATABASE}}.{{CONTROL_SCHEMA}}.PROMOTION_DECISION
+    WHERE DECISION_ID = :P_DECISION_ID
+      AND CANDIDATE_VERSION = :P_VERSION
+      AND DECISION = 'approve'
+  )) THEN
+    RETURN 'rejected: no matching approve record in PROMOTION_DECISION';
+  END IF;
+
+  SELECT SELECTION_ID, MODEL_VERSION, FEATURE_CONTRACT
+    INTO :prev_selection_id, :incumbent_version, :feature_contract
+  FROM {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVING_SELECTION
+  WHERE ENVIRONMENT = 'PROD' AND ACTIVE = TRUE
+  QUALIFY ROW_NUMBER() OVER (ORDER BY SELECTED_AT DESC) = 1;
+
+  IF (:feature_contract IS NULL) THEN
+    SELECT FEATURE_CONTRACT INTO :feature_contract
+    FROM {{DATABASE}}.{{CONTROL_SCHEMA}}.PIPELINE_ATTEMPT
+    WHERE ENVIRONMENT = 'PROD' AND MODEL_VERSION = :P_VERSION
+    QUALIFY ROW_NUMBER() OVER (ORDER BY COMPLETED_AT DESC) = 1;
+  END IF;
+
+  -- 2. Apply serving change: Warehouse BATCH alias vs Online Gateway (SHADOW or SPLIT).
+  IF (:P_MODE = 'BATCH') THEN
+    IF (:incumbent_version IS NOT NULL AND :incumbent_version != :P_VERSION) THEN
+      EXECUTE IMMEDIATE
+        'ALTER MODEL {{DATABASE}}.{{PROD_SCHEMA}}.CREDIT_DEFAULT_EARLY_WARNING VERSION '
+        || :incumbent_version || ' UNSET ALIAS';
+    END IF;
+    EXECUTE IMMEDIATE
+      'ALTER MODEL {{DATABASE}}.{{PROD_SCHEMA}}.CREDIT_DEFAULT_EARLY_WARNING VERSION '
+      || :P_VERSION || ' SET ALIAS = PRODUCTION';
+  ELSE
+    -- Online Gateway modes require a smoke-tested SPCS service from jobs/deploy_service.py.
+    IF (NOT EXISTS (
+      SELECT 1
+      FROM {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVICE_DEPLOYMENT
+      WHERE ENVIRONMENT = 'PROD'
+        AND MODEL_VERSION = :P_VERSION
+        AND STATUS = 'SMOKE_TESTED'
+    )) THEN
+      RETURN 'rejected: candidate SPCS service has no SMOKE_TESTED receipt';
+    END IF;
+
+    IF (:P_MODE = 'SHADOW') THEN
+      spec := 'spec:\n  type: shadow_traffic\n  primary:\n'
+           || '  - type: endpoint\n    value: {{DATABASE}}.{{PROD_SCHEMA}}.CREDIT_DEFAULT_SVC_'
+           || COALESCE(:incumbent_version, :P_VERSION) || '!inference\n'
+           || '  shadow:\n'
+           || '  - type: endpoint\n    value: {{DATABASE}}.{{PROD_SCHEMA}}.CREDIT_DEFAULT_SVC_'
+           || :P_VERSION || '!inference\n'
+           || '    weight: ' || :P_CANDIDATE_WEIGHT || '\n';
+    ELSE
+      spec := 'spec:\n  type: traffic_split\n  split_type: custom\n  targets:\n'
+           || '  - type: endpoint\n    value: {{DATABASE}}.{{PROD_SCHEMA}}.CREDIT_DEFAULT_SVC_'
+           || COALESCE(:incumbent_version, :P_VERSION) || '!inference\n'
+           || '    weight: ' || (100 - :P_CANDIDATE_WEIGHT) || '\n'
+           || '  - type: endpoint\n    value: {{DATABASE}}.{{PROD_SCHEMA}}.CREDIT_DEFAULT_SVC_'
+           || :P_VERSION || '!inference\n'
+           || '    weight: ' || :P_CANDIDATE_WEIGHT || '\n';
+    END IF;
+
+    EXECUTE IMMEDIATE
+      'CREATE OR REPLACE GATEWAY {{DATABASE}}.{{PROD_SCHEMA}}.CREDIT_DEFAULT_GATEWAY FROM SPECIFICATION $$'
+      || :spec || '$$';
+  END IF;
+
+  -- 3. Record serving selection; only BATCH or 100% live SPLIT replaces the active primary.
+  IF (:P_MODE = 'BATCH' OR (:P_MODE = 'SPLIT' AND :P_CANDIDATE_WEIGHT = 100)) THEN
+    UPDATE {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVING_SELECTION
+    SET ACTIVE = FALSE
+    WHERE ENVIRONMENT = 'PROD' AND ACTIVE = TRUE;
+  END IF;
+
+  INSERT INTO {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVING_SELECTION (
+    SELECTION_ID, ENVIRONMENT, MODEL_DATABASE, MODEL_SCHEMA, MODEL_NAME,
+    MODEL_VERSION, FEATURE_CONTRACT, PREVIOUS_SELECTION_ID, DECISION_ID,
+    VERIFICATION_STATUS, RECOVERY_STATUS, SELECTED_BY, SELECTED_AT, ACTIVE
+  )
+  SELECT
+    'SEL_' || SUBSTR(REPLACE(UUID_STRING(), '-', ''), 1, 10),
+    'PROD', '{{DATABASE}}', '{{PROD_SCHEMA}}', 'CREDIT_DEFAULT_EARLY_WARNING',
+    :P_VERSION, COALESCE(:feature_contract, 'V01'), :prev_selection_id, :P_DECISION_ID,
+    :P_MODE || '_' || :P_CANDIDATE_WEIGHT, NULL, CURRENT_USER(), CURRENT_TIMESTAMP(),
+    (:P_MODE = 'BATCH' OR (:P_MODE = 'SPLIT' AND :P_CANDIDATE_WEIGHT = 100));
+
+  RETURN 'activated ' || :P_VERSION || ' in ' || :P_MODE || ' mode at ' || :P_CANDIDATE_WEIGHT || '%';
+END;
+$$;
+
+CREATE OR REPLACE PROCEDURE {{DATABASE}}.{{CONTROL_SCHEMA}}.RECOVER_SERVING(
+  P_ENVIRONMENT VARCHAR
+)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+  cur_selection_id VARCHAR;
+  cur_version VARCHAR;
+  prev_selection_id VARCHAR;
+  prev_version VARCHAR;
+  prev_contract VARCHAR;
+  prev_decision_id VARCHAR;
+BEGIN
+  SELECT SELECTION_ID, MODEL_VERSION, PREVIOUS_SELECTION_ID
+    INTO :cur_selection_id, :cur_version, :prev_selection_id
+  FROM {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVING_SELECTION
+  WHERE ENVIRONMENT = :P_ENVIRONMENT AND ACTIVE = TRUE
+  QUALIFY ROW_NUMBER() OVER (ORDER BY SELECTED_AT DESC) = 1;
+
+  IF (:prev_selection_id IS NULL) THEN
+    RETURN 'rejected: no previous compatible selection is available';
+  END IF;
+
+  SELECT MODEL_VERSION, FEATURE_CONTRACT, DECISION_ID
+    INTO :prev_version, :prev_contract, :prev_decision_id
+  FROM {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVING_SELECTION
+  WHERE SELECTION_ID = :prev_selection_id;
+
+  IF (:cur_version IS NOT NULL AND :cur_version != :prev_version) THEN
+    EXECUTE IMMEDIATE
+      'ALTER MODEL {{DATABASE}}.{{PROD_SCHEMA}}.CREDIT_DEFAULT_EARLY_WARNING VERSION '
+      || :cur_version || ' UNSET ALIAS';
+  END IF;
+  EXECUTE IMMEDIATE
+    'ALTER MODEL {{DATABASE}}.{{PROD_SCHEMA}}.CREDIT_DEFAULT_EARLY_WARNING VERSION '
+    || :prev_version || ' SET ALIAS = PRODUCTION';
+
+  UPDATE {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVING_SELECTION
+  SET ACTIVE = FALSE, RECOVERY_STATUS = 'ROLLED_BACK'
+  WHERE SELECTION_ID = :cur_selection_id;
+
+  INSERT INTO {{DATABASE}}.{{CONTROL_SCHEMA}}.SERVING_SELECTION (
+    SELECTION_ID, ENVIRONMENT, MODEL_DATABASE, MODEL_SCHEMA, MODEL_NAME,
+    MODEL_VERSION, FEATURE_CONTRACT, PREVIOUS_SELECTION_ID, DECISION_ID,
+    VERIFICATION_STATUS, RECOVERY_STATUS, SELECTED_BY, SELECTED_AT, ACTIVE
+  )
+  SELECT
+    'SEL_REC_' || SUBSTR(REPLACE(UUID_STRING(), '-', ''), 1, 8),
+    :P_ENVIRONMENT, '{{DATABASE}}', '{{PROD_SCHEMA}}', 'CREDIT_DEFAULT_EARLY_WARNING',
+    :prev_version, :prev_contract, :prev_selection_id, :prev_decision_id,
+    'VERIFIED', 'RESTORED', CURRENT_USER(), CURRENT_TIMESTAMP(), TRUE;
+
+  RETURN 'recovered ' || :P_ENVIRONMENT || ' to ' || :prev_version;
+END;
+$$;
+
+GRANT USAGE ON PROCEDURE {{DATABASE}}.{{CONTROL_SCHEMA}}.ACTIVATE_SERVING(VARCHAR, VARCHAR, VARCHAR, NUMBER)
+  TO ROLE {{ENGINEER_ROLE}};
+GRANT USAGE ON PROCEDURE {{DATABASE}}.{{CONTROL_SCHEMA}}.ACTIVATE_SERVING(VARCHAR, VARCHAR, VARCHAR, NUMBER)
+  TO ROLE {{SERVICE_ROLE}};
+GRANT USAGE ON PROCEDURE {{DATABASE}}.{{CONTROL_SCHEMA}}.RECOVER_SERVING(VARCHAR)
+  TO ROLE {{ENGINEER_ROLE}};
+GRANT USAGE ON PROCEDURE {{DATABASE}}.{{CONTROL_SCHEMA}}.RECOVER_SERVING(VARCHAR)
+  TO ROLE {{SERVICE_ROLE}};
 
 SELECT 'CONTROL_CONTRACTS_READY' AS STATUS,
   '{{PREFIX}}' AS PREFIX,

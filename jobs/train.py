@@ -8,65 +8,56 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_DIR / "src"))
 
-from credit_default.contracts import (  # noqa: E402
-    expected_feature_views,
-    load_workflow_contract,
-    resolve_environment,
-    validate_feature_columns,
-)
-from credit_default.evidence import evidence_handoff  # noqa: E402
-from credit_default.release import resolve_binding  # noqa: E402
-from credit_default.training import estimator_specification  # noqa: E402
+from credit_default.contracts import get_session, load_project  # noqa: E402
+from credit_default.release import pipeline_release_decision  # noqa: E402
+from credit_default.training import train_and_register_candidate  # noqa: E402
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Unattended credit-default training")
+    parser = argparse.ArgumentParser(description="Unattended credit-default training entrypoint")
     parser.add_argument("--environment", required=True, choices=["DEV", "TEST", "PROD"])
     parser.add_argument("--release-id", required=True)
     parser.add_argument("--dataset-version", required=True)
     parser.add_argument("--source-state", default="reviewed-release")
+    parser.add_argument("--bundle-name", default=None)
     return parser.parse_args(argv)
 
 
-def planned_attempt(args: argparse.Namespace) -> dict:
-    contract = load_workflow_contract()
-    environment = resolve_environment(args.environment)
-    binding = resolve_binding(args.environment)
-    spec = estimator_specification(contract)
-    if spec["replays_hpo"]:
-        raise ValueError("Unattended training must not replay exploratory HPO")
-    validate_feature_columns(
-        contract["features"]["numeric"] + contract["features"]["categorical"],
-        contract,
-    )
-    handoff = evidence_handoff(
-        environment=environment,
-        dataset_name=contract["datasets"]["development"],
-        dataset_version=args.dataset_version,
-        feature_views=expected_feature_views(contract),
-        experiment_name=contract["model"]["experiment_name"],
-        run_id="UNATTENDED_PENDING",
-        model_name=contract["model"]["name"],
-        model_version=None,
-        screening_status="running",
-        source_state=args.source_state,
-    )
-    return {
-        "environment": environment["name"],
-        "presentation_environment": environment["presentation_name"],
-        "feature_store_schema": binding["feature_store_schema"],
-        "release_id": args.release_id,
-        "estimator": spec,
-        "handoff": handoff,
-        "changes_live_serving": False,
-        "execute_from_notebook_cell": False,
-    }
-
-
 def main(argv: list[str] | None = None) -> int:
-    result = planned_attempt(parse_args(argv))
+    args = parse_args(argv)
+    session = get_session()
+    project = load_project()
+    database = project["snowflake"]["database"]
+    control_schema = project["snowflake"]["schemas"]["control"]
+
+    result = train_and_register_candidate(
+        session,
+        environment_name=args.environment,
+        release_id=args.release_id,
+        dataset_version=args.dataset_version,
+        source_state=args.source_state,
+        bundle_name=args.bundle_name,
+    )
+
+    release_gate = pipeline_release_decision(
+        environment_name=args.environment,
+        checks_passed=(result["screening_status"] == "accepted"),
+        project=project,
+    )
+    result["pipeline_release_decision"] = release_gate
+
+    if args.environment == "TEST":
+        session.sql(
+            f"""
+            UPDATE {database}.{control_schema}.ENVIRONMENT_DEPLOYMENT
+            SET PIPELINE_VALIDATION_STATUS = ?
+            WHERE RELEASE_ID = ? AND ENVIRONMENT = 'TEST'
+            """,
+            params=[release_gate["decision"], args.release_id],
+        ).collect()
+
     print(json.dumps(result, indent=2, sort_keys=True))
-    return 0
+    return 0 if result["screening_status"] == "accepted" else 1
 
 
 if __name__ == "__main__":

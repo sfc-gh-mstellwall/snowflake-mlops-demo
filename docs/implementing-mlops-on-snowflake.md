@@ -236,6 +236,7 @@ An on-demand DEV validation can execute the deployed bundle explicitly:
 
 ```sql
 EXECUTE CODE BUNDLE ML_DEV.CHURN.CHURN_TRAINING_R_2026_09_11_1
+  ENTRYPOINT = 'scripts/run_training.py'
   ARGUMENTS = ('--environment', 'dev', '--config', 'config/dev.yaml');
 ```
 
@@ -257,7 +258,7 @@ CREATE CODE BUNDLE ML_PREPROD.CHURN.CHURN_TRAINING_R_2026_09_11_1
   COMMENT = 'churn-risk release 2026.09.11.1';
 ```
 
-The release pipeline records the commit SHA, release identifier, stage path, payload digest and bundle name together. File upload is performed by CI before this SQL runs.
+The release pipeline records the commit SHA, release identifier, stage path, payload digest and bundle name together. File upload is performed by CI with the Snowflake CLI (`snow stage copy`) before this SQL runs through `snow sql`. DCM can alternatively manage a bundle with `DEFINE CODE BUNDLE` (Preview); Section 11 explains why this guide keeps CLI-created release bundles as the default.
 
 ### DEV exit criteria
 
@@ -306,13 +307,14 @@ CREATE OR REPLACE TASK ML_PROD.CHURN.CHURN_TRAINING_TASK
   SCHEDULE = 'USING CRON 0 4 * * SUN Europe/Stockholm'
 AS
   EXECUTE CODE BUNDLE ML_PROD.CHURN.CHURN_TRAINING_R_2026_09_11_1
+    ENTRYPOINT = 'scripts/run_training.py'
     ARGUMENTS = ('--environment', 'prod', '--config', 'config/prod.yaml');
 
 -- Resume only after deployment checks confirm the release and grants.
 ALTER TASK ML_PROD.CHURN.CHURN_TRAINING_TASK RESUME;
 ```
 
-For a multi-step graph, the release process deploys the graph definition instead. The task-owner role receives the minimum privileges needed by every step and is tested in Pre-Prod before the PROD graph is resumed.
+In a DCM-managed environment, the task or graph is a `DEFINE TASK` in the environment's DCM project. Newly deployed tasks are suspended by default, so the CI step that resumes the graph remains a separate, verified action. For a multi-step graph, the release process deploys the graph definition instead. The task-owner role receives the minimum privileges needed by every step and is tested in Pre-Prod before the PROD graph is resumed.
 
 ## 6. Stage 4: Validate the pipeline release in Pre-Prod
 
@@ -392,6 +394,15 @@ Two strategies are valid.
 Choose deliberately based on data locality, training cost, reproducibility, regulation, and evidence requirements.
 
 For warehouse inference, a Registry alias can control which version a SQL or Python call resolves. For real-time inference, an alias does not retarget an existing service. Deploy separate champion and challenger services and use a **Gateway** to move traffic. Shadow traffic can copy representative requests to the challenger while callers receive only the primary response; weighted routing can then introduce challenger responses gradually ([Gateways](https://docs.snowflake.com/en/developer-guide/snowflake-ml/inference/stable-endpoints-api-reference)).
+
+For the online branch, treat the **Gateway as stable** and **services as disposable**:
+
+1. Create one Gateway per environment through the infrastructure workflow. Its hostname is fixed for the lifetime of the gateway object, so it is not recreated during a model upgrade. Gateways are not DCM-managed entities; create them with SQL through the Snowflake CLI.
+2. For each approved Prod candidate, create a new service from that exact Registry version. Service creation from a Registry version uses the Python `ModelVersion.create_service()` API, so it runs in a Code Bundle entrypoint inside Snowflake rather than on the CI runner (Section 11). Creating a service does not change what callers receive.
+3. Smoke-test the candidate service directly, then change routing through the Gateway with `ALTER GATEWAY ... FROM SPECIFICATION`. A `traffic_split` specification requires weights that sum to 100. A `shadow_traffic` specification has one primary endpoint and weighted shadows; shadow traffic is Preview.
+4. Verify through the Gateway URL, then record the serving selection. Recovery restores the previous specification. Retire services older than the rollback target after a soak period.
+
+The Gateway owner role needs `BIND SERVICE ENDPOINT` on the account and `USAGE` on the target endpoints. Routing changes typically take effect within a minute ([Gateways](https://docs.snowflake.com/en/developer-guide/snowpark-container-services/gateway); [ALTER GATEWAY](https://docs.snowflake.com/en/sql-reference/sql/alter-gateway)). Pre-Prod validates the same pattern with its own services and Gateway; Prod never routes to a Pre-Prod service.
 
 Rollback must restore the complete compatible path: model version or service, alias or Gateway weights, feature version, signature, dependencies, and monitor configuration.
 
@@ -497,7 +508,225 @@ Project initiation and production delivery have distinct owners:
 
 CI/CD should use workload identity federation rather than a long-lived credential and separately validate code, model quality, Snowflake object changes, and post-deployment behaviour.
 
-**DCM Projects** can manage supported scaffolding such as databases, schemas, warehouses, stages, tasks, roles, grants, tags, and project-owned dynamic tables. They do not currently manage `MODEL`, `DATASET`, `FEATURE VIEW`, `EXPERIMENT`, or `MODEL MONITOR` objects ([DCM support](https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities)). Models and ML objects therefore need explicit deployment steps in the pipeline.
+### Orchestration: who runs what
+
+A recurring question is whether CI/CD or Snowflake should orchestrate the MLOps lifecycle. The answer is both, separated by **loop** rather than by tool. Under the retrain-in-target strategy, four distinct state changes occur, each with its own owner:
+
+| Loop or decision | Trigger | Orchestrator | Durable record |
+|---|---|---|---|
+| 1. Pipeline release (code) | Pull-request merge | CI/CD, for example GitHub Actions | Source release, release stage path, Code Bundle, suspended Task Graph, Pre-Prod pipeline result |
+| 2. Prod candidate (model) | Schedule, retraining policy, or manual run | Snowflake: Task Graph executing the Code Bundle | Feature and Dataset versions, Experiment run, Registry candidate, screening result |
+| 3. Approval | Accountable owner | Snowflake record written by the production owner role | Promotion decision for one exact candidate and its evidence |
+| 4. Serving activation | Approval exists | CI/CD executes; Snowflake enforces | Alias or Gateway configuration and serving selection |
+
+The governing rule is that **CI/CD never holds the truth**. Every CI job reads the relevant Snowflake record first and fails closed when evidence is missing or does not match. Loop 2 stays in Snowflake because Prod candidates train on Prod-governed data, can run longer than a CI runner should wait, and can be started by monitoring. CI's responsibility for a pipeline release ends when a verified pipeline is present in Prod; resuming its schedule is the final verification step.
+
+Loop 2 must re-enter CI before activation so that the change remains reviewable. Two return paths are practical:
+
+- **Polling (simplest):** a scheduled workflow queries for candidates that are screened `accepted`, have an approval record, and are not yet serving.
+- **Push:** a Snowflake notification integration calls a webhook that starts a `repository_dispatch` workflow. This is faster but requires a CI token stored as a Snowflake secret.
+
+Neither path may promote a model directly from a drift alert or a screening result.
+
+### Tool boundaries: DCM, Snowflake CLI, and Code Bundles
+
+These three are frequently confused because all three appear in a release pipeline. They have different roles:
+
+| Concern | Use | Reason |
+|---|---|---|
+| Databases, schemas, warehouses, stages, roles, grants, tags, tasks and Task Graphs, alerts, procedures | **DCM Projects** (`snow dcm plan` / `snow dcm deploy`) | Declarative desired state; PLAN output reviewable in the pull request; deployment history per environment project |
+| Upload the approved commit to an immutable release path, create the release-specific Code Bundle, write release records, trigger and verify runs | **Snowflake CLI** (`snow stage copy`, `snow sql -x`) | Imperative, release-specific steps that should create a new object per release rather than reconcile one |
+| Feature Views, Dataset versions, Experiment runs, model versions | **Created at runtime by the training Code Bundle** (Python: Feature Store, `ExperimentTracking`, `log_model`) | Never created by CI. SQL cannot create a model version from scratch; `CREATE MODEL` and `ADD VERSION` only copy existing models |
+| Model service from a Registry version | **Code Bundle deployment entrypoint** (Python `create_service()`), executed with SQL | No documented SQL path, and it keeps `snowflake-ml-python` off the CI runner |
+| Alias or default version, tags, Gateway routing, model monitors, serving record | **SQL**: `ALTER MODEL`, `ALTER GATEWAY`, `CREATE MODEL MONITOR`, wrapped in an owner's-rights procedure where the production owner must authorise | Control-plane changes that need no ML library |
+| Compute pools and Gateways (create once) | **Snowflake CLI** (`snow sql`, `snow spcs compute-pool`) in the infrastructure workflow | Not DCM-managed entities |
+| Training, evaluation, and registration | **Code Bundle** executed by a task or SQL file | An execution unit, not a deployment tool |
+
+The Snowflake CLI has no command groups for models, Datasets, Feature Views, Experiments, monitors, or Gateways. It reaches them only through `snow sql`. The practical consequence is to keep Python ML work inside Snowflake and expose it to CI as SQL, as shown in the example below.
+
+DCM Projects became generally available on 7 August 2026. DCM-defined tasks deploy suspended unless the definition declares a `STARTED` target state, so the production graph can remain suspended until verification. DCM grant management does not cover `CALLER` grants ([DCM deployment](https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use); [DCM supported entities](https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities)).
+
+**Alternative: DCM-managed Code Bundles.** `DEFINE CODE BUNDLE` (Preview) lets a DCM project create and update a bundle from a project asset, adding a new version on each deployment. It is a reasonable choice when the bundle should be versioned alongside the rest of the environment. This guide keeps CLI-created, release-specific bundles as the default because DCM cannot adopt a bundle created outside the project; removing the `DEFINE` drops the bundle and all of its versions; a project that manages a bundle cannot be dropped without `PURGE`; and one bundle name per release gives an unambiguous binding between what Pre-Prod validated and what Prod executes.
+
+### Illustrative GitHub Actions shape
+
+The [Snowflake CLI GitHub Action](https://docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/github-action) installs `snow` and, with `use-oidc: true`, configures workload identity federation so that no Snowflake secret is stored in GitHub. The service user trusts the GitHub issuer and an exact subject claim. When a job declares `environment:`, the subject takes the form `repo:<owner>/<repo>:environment:<name>`. DCM-specific composite actions (`snowflakedb/snowflake-actions/dcm/*`) are Preview. The following is a shape, not a tested workflow:
+
+```yaml
+# pipeline-release.yaml: loop 1
+on:
+  push:
+    branches: [main]
+permissions: {id-token: write, contents: read}
+jobs:
+  preprod:
+    runs-on: ubuntu-latest
+    environment: preprod
+    env: {SNOWFLAKE_ACCOUNT: myorg-myaccount}   # account identifier is not a secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: snowflakedb/snowflake-actions@v3
+        with: {use-oidc: true}
+      - run: snow dcm plan --target PREPROD -x && snow dcm deploy --target PREPROD -x
+      - run: snow stage copy . @ML_PREPROD.CHURN.ML_RELEASES/churn-risk/${{ github.sha }}/ --recursive -x
+      - run: snow sql -x -f deployment/create_release_bundle.sql --variable "release='${{ github.sha }}'"
+      - run: snow sql -x -f deployment/run_preprod_validation.sql   # fails on reject or failed
+  prod:
+    needs: preprod
+    environment: prod        # required reviewers
+    # same steps against the PROD target; Task Graph stays suspended until verified
+```
+
+### Example: one CI interface for an online serving release
+
+The goal is that CI switches neither languages nor dependencies. The runner installs only the Snowflake CLI and issues SQL. Python that needs `snowflake-ml-python` runs inside Snowflake. Two Snowflake objects provide this, and the split is forced by the platform: `EXECUTE CODE BUNDLE` runs with caller's rights and cannot be called from an owner's-rights procedure, while the privileged state change should run with owner's rights ([EXECUTE CODE BUNDLE](https://docs.snowflake.com/en/sql-reference/sql/execute-code-bundle)).
+
+| Step | Snowflake object | Runs as | CI call |
+|---|---|---|---|
+| Create and smoke-test the candidate service | `deploy_service.py` entrypoint in the release Code Bundle (Python) | CI service role (caller's rights) | `EXECUTE CODE BUNDLE ... ENTRYPOINT = 'jobs/deploy_service.py'` |
+| Verify approval, move Gateway weights, record selection | `ACTIVATE_SERVING` procedure (SQL), defined by DCM | Production owner role (owner's rights) | `CALL ACTIVATE_SERVING(...)` |
+| Restore the previous selection | `RECOVER_SERVING` procedure (SQL) | Production owner role | `CALL RECOVER_SERVING(...)` |
+
+The CI service role therefore needs `USAGE` on the Code Bundle and compute pool, `READ` on the model, and `CREATE SERVICE` in the serving schema to create the service, plus `USAGE` on the two procedures. It never receives the production owner role or ownership of the Gateway.
+
+The GitHub workflow contains only SQL:
+
+```yaml
+# serving-release.yaml: loop 4 (online reference branch)
+on:
+  workflow_dispatch:
+    inputs:
+      version:     {required: true}                  # exact Registry version, for example CANDIDATE_7
+      decision_id: {required: true}                  # PROMOTION_DECISION row authorising it
+      mode:        {default: 'SHADOW', required: true}  # 'SHADOW' (mirror only) or 'SPLIT' (live canary/cutover)
+      weight:      {default: '10', required: true}      # shadow mirror % (0-100) or live split % (1-100)
+permissions: {id-token: write, contents: read}
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    environment: prod                 # required reviewers; OIDC subject repo:<org>/<repo>:environment:prod
+    env: {SNOWFLAKE_ACCOUNT: myorg-myaccount}
+    steps:
+      - uses: snowflakedb/snowflake-actions@v3
+        with: {use-oidc: true}        # installs snow only; no snowflake-ml-python
+      - name: Create and smoke-test the candidate service
+        run: |
+          snow sql -x -q "EXECUTE CODE BUNDLE ML_PROD.CHURN.CHURN_TRAINING_R_2026_09_11_1
+            ENTRYPOINT = 'jobs/deploy_service.py'
+            ARGUMENTS = ('--version', '${{ inputs.version }}')"
+      - name: Apply Gateway routing (procedure re-checks approval)
+        run: |
+          snow sql -x -q "CALL ML_PROD.CONTROL.ACTIVATE_SERVING(
+            '${{ inputs.version }}', '${{ inputs.decision_id }}',
+            '${{ inputs.mode }}', ${{ inputs.weight }})"
+      - name: Recover on failure
+        if: failure()
+        run: snow sql -x -q "CALL ML_PROD.CONTROL.RECOVER_SERVING()"
+```
+
+The deployment entrypoint ships in the same release Code Bundle as training, so it is reviewed and versioned with the pipeline release. Enabling `autocapture=True` at service creation (an immutable service property) logs requests and responses so that a Gateway Model Monitor (`CREATE MODEL MONITOR ... WITH MODEL = ... GATEWAY = ...`) can compare a shadow or canary challenger against the primary incumbent service (`BASE_SERVICE`). The entrypoint is idempotent and writes a durable receipt rather than relying on process output:
+
+```python
+# jobs/deploy_service.py (illustrative)
+import argparse
+from snowflake.snowpark.context import get_active_session
+from snowflake.ml.registry import Registry
+
+args = argparse.ArgumentParser()
+args.add_argument("--version", required=True)
+version = args.parse_args().version
+
+session = get_active_session()
+mv = Registry(session, database_name="ML_PROD", schema_name="CHURN") \
+    .get_model("CHURN_DETECTOR").version(version)
+
+service = f"ML_PROD.SERVING.CHURN_DETECTOR_{version}"
+if not session.sql(f"SHOW SERVICES LIKE 'CHURN_DETECTOR_{version}' IN SCHEMA ML_PROD.SERVING").collect():
+    mv.create_service(service_name=service, service_compute_pool="ML_PROD_SERVE_POOL",
+                      ingress_enabled=True, autocapture=True)
+
+# Smoke-test the exact candidate before any traffic moves; fail the run if it does not pass.
+mv.run(session.table("ML_PROD.CHURN.SMOKE_TEST_INPUT"), function_name="predict",
+       service_name=service).collect()
+session.sql("INSERT INTO ML_PROD.CONTROL.SERVICE_DEPLOYMENT (MODEL_VERSION, SERVICE_NAME, STATUS) "
+            "SELECT ?, ?, 'SMOKE_TESTED'", params=[version, service]).collect()
+```
+
+The activation procedure is plain SQL, so it needs no Python dependency. DCM can define it with `DEFINE PROCEDURE`, owned by the production owner role. It supports both Gateway rollout modes: **`SHADOW`** (`type: shadow_traffic`, Preview, where the incumbent primary serves 100% of caller responses while mirroring `P_CANDIDATE_WEIGHT`% of requests to the candidate) and **`SPLIT`** (`type: traffic_split`, GA, where weights sum to 100 for canary or 100% cutover). Inputs are checked against the approval and deployment records before any dynamic statement runs:
+
+```sql
+CREATE OR REPLACE PROCEDURE ML_PROD.CONTROL.ACTIVATE_SERVING(
+    P_VERSION VARCHAR, P_DECISION_ID VARCHAR, P_MODE VARCHAR, P_CANDIDATE_WEIGHT NUMBER)
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS OWNER
+AS
+$$
+DECLARE
+  incumbent VARCHAR;
+  spec VARCHAR;
+BEGIN
+  IF (NOT REGEXP_LIKE(:P_VERSION, '^[A-Z0-9_]+$')) THEN
+    RETURN 'rejected: invalid version identifier';
+  END IF;
+  IF (:P_MODE NOT IN ('SHADOW', 'SPLIT')) THEN
+    RETURN 'rejected: mode must be SHADOW or SPLIT';
+  END IF;
+  IF (:P_CANDIDATE_WEIGHT < 1 OR :P_CANDIDATE_WEIGHT > 100) THEN
+    RETURN 'rejected: weight must be 1-100';
+  END IF;
+  -- The approval must name this exact version.
+  IF (NOT EXISTS (SELECT 1 FROM ML_PROD.CONTROL.PROMOTION_DECISION
+                  WHERE DECISION_ID = :P_DECISION_ID
+                    AND CANDIDATE_VERSION = :P_VERSION
+                    AND DECISION = 'approve')) THEN
+    RETURN 'rejected: no matching approval';
+  END IF;
+  -- The candidate service must have passed its smoke test.
+  IF (NOT EXISTS (SELECT 1 FROM ML_PROD.CONTROL.SERVICE_DEPLOYMENT
+                  WHERE MODEL_VERSION = :P_VERSION AND STATUS = 'SMOKE_TESTED')) THEN
+    RETURN 'rejected: candidate service not smoke-tested';
+  END IF;
+
+  SELECT MODEL_VERSION INTO :incumbent FROM ML_PROD.CONTROL.SERVING_SELECTION
+    WHERE ENVIRONMENT = 'PROD' AND ACTIVE QUALIFY ROW_NUMBER() OVER (ORDER BY SELECTED_AT DESC) = 1;
+
+  IF (:P_MODE = 'SHADOW') THEN
+    -- Primary (incumbent) serves 100% of caller responses; candidate receives mirrored shadow requests.
+    spec := 'spec:\n  type: shadow_traffic\n  primary:\n'
+         || '  - type: endpoint\n    value: ML_PROD.SERVING.CHURN_DETECTOR_' || :incumbent || '!inference\n'
+         || '  shadow:\n'
+         || '  - type: endpoint\n    value: ML_PROD.SERVING.CHURN_DETECTOR_' || :P_VERSION || '!inference\n'
+         || '    weight: ' || :P_CANDIDATE_WEIGHT || '\n';
+  ELSE
+    -- Live traffic split across incumbent and candidate (weights sum to 100).
+    spec := 'spec:\n  type: traffic_split\n  split_type: custom\n  targets:\n'
+         || '  - type: endpoint\n    value: ML_PROD.SERVING.CHURN_DETECTOR_' || :incumbent || '!inference\n'
+         || '    weight: ' || (100 - :P_CANDIDATE_WEIGHT) || '\n'
+         || '  - type: endpoint\n    value: ML_PROD.SERVING.CHURN_DETECTOR_' || :P_VERSION || '!inference\n'
+         || '    weight: ' || :P_CANDIDATE_WEIGHT || '\n';
+  END IF;
+  EXECUTE IMMEDIATE 'ALTER GATEWAY ML_PROD.SERVING.CHURN_GATEWAY FROM SPECIFICATION $$' || :spec || '$$';
+
+  -- Record the change; only a 100% live SPLIT marks the candidate as the active primary.
+  INSERT INTO ML_PROD.CONTROL.SERVING_SELECTION
+    (SELECTION_ID, ENVIRONMENT, MODEL_NAME, MODEL_VERSION, DECISION_ID,
+     VERIFICATION_STATUS, SELECTED_BY, SELECTED_AT, ACTIVE)
+  SELECT UUID_STRING(), 'PROD', 'CHURN_DETECTOR', :P_VERSION, :P_DECISION_ID,
+         :P_MODE || '_' || :P_CANDIDATE_WEIGHT, CURRENT_USER(), CURRENT_TIMESTAMP(),
+         (:P_MODE = 'SPLIT' AND :P_CANDIDATE_WEIGHT = 100);
+  RETURN 'activated ' || :P_VERSION || ' in ' || :P_MODE || ' mode at ' || :P_CANDIDATE_WEIGHT || '%';
+END;
+$$;
+```
+
+The batch-only default uses the same procedure shape without the Gateway statement. The privileged change is `ALTER MODEL ML_PROD.CHURN.CHURN_DETECTOR VERSION <version> SET ALIAS = PRODUCTION`, after `UNSET ALIAS` on the previous version, because an alias can be held by only one version. That path needs no Code Bundle step at all.
+
+These snippets show the contract and have not been executed. Before adoption, validate that `create_service()` and `ModelVersion.run(service_name=...)` behave as expected inside a Code Bundle on the chosen runtime, and that `EXECUTE CODE BUNDLE` returns only after the entrypoint completes so that CI can rely on its exit status. If the call returns early, add a polling step on the deployment receipt.
+
+### Separation of duties for activation
+
+The CI identity naturally maps to the engineer or service role, while serving selection should be written only by the production owner. Do not grant the production owner role to the CI user. Instead, deploy an owner's-rights procedure (DCM can define it) owned by the production owner role. The procedure verifies that an approval exists for the exact model version and evidence before it changes the alias or Gateway and records the serving selection. The CI identity receives `USAGE` on that procedure only. A GitHub Environment reviewer is an additional control, not a substitute for the Snowflake approval record.
 
 ML Jobs generally require compute-pool, schema `CREATE SERVICE`, and payload-stage access. Real-time services require model `READ` or ownership, compute-pool access, schema `CREATE SERVICE`, and endpoint privileges when ingress is enabled; stage access is not a general service prerequisite. Warehouse model calls require model `USAGE` ([ML Jobs access](https://docs.snowflake.com/en/developer-guide/snowflake-ml/ml-jobs/access-control-requirements); [real-time privileges](https://docs.snowflake.com/en/developer-guide/snowflake-ml/inference/real-time-inference-rest-api#label-real-time-inference-required-privileges)).
 
@@ -532,5 +761,9 @@ This sequence creates a training and model-promotion system that can be run, tes
 - Auto Capture — https://docs.snowflake.com/en/developer-guide/snowflake-ml/inference/auto-capture-inference-logs
 - Gateways — https://docs.snowflake.com/en/developer-guide/snowflake-ml/inference/stable-endpoints-api-reference
 - DCM supported objects — https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-supported-entities
+- Deploy and manage DCM Projects — https://docs.snowflake.com/en/user-guide/dcm-projects/dcm-projects-use
+- Snowflake CLI GitHub Action — https://docs.snowflake.com/en/developer-guide/snowflake-cli/cicd/github-action
+- Gateways (SPCS) — https://docs.snowflake.com/en/developer-guide/snowpark-container-services/gateway
+- ALTER GATEWAY — https://docs.snowflake.com/en/sql-reference/sql/alter-gateway
 
 Product capabilities and availability status referenced as of September 2026.

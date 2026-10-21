@@ -1,19 +1,20 @@
-# Workshop demo runbook
+# Presentation & demo runbook
 
-This is the presenter contract for the 90-minute, 25-slide workshop. It maps the four timed demos to current assets and later increments. It does not claim any demonstration has run successfully.
-
-Master presentation: [MLOps That Runs on Snowflake](https://docs.google.com/presentation/d/1kzQ48NUvei10eGSe7gbgXzJO61okbe-o2SOyqfH6pTE/edit).
+This runbook maps the MLOps story across the **18-slide standard presentation** ([MLOps That Runs on Snowflake — Standard Presentation](https://docs.google.com/presentation/d/1QDS-NzGTbERi2C-TlQ4kyTJxYTRkmM6cC4Bvgo08V-g/edit)), the preserved **25-slide workshop master** ([MLOps That Runs on Snowflake — Workshop Master](https://docs.google.com/presentation/d/1kzQ48NUvei10eGSe7gbgXzJO61okbe-o2SOyqfH6pTE/edit)), and the **4 Snowflake Workspace notebooks** (`notebooks/01` through `notebooks/04`).
 
 Do not run this disposable workload in Snowhouse.
 
-## Workshop defaults
+## Defaults
 
-- Keep 25 core slides and four demo slots of 6, 5, 6 and 5 minutes.
-- Keep all three interactive notebooks. Manual selection and holdout gates stay presenter-controlled.
-- Disposable demo schemas: `RAW`, `DEV`, `TEST` (**Pre-Prod**), `PROD`, `CONTROL`.
-- Production recommendation remains separate databases in one account.
-- Required serving path is warehouse batch. Online services, Gateways, async batch jobs and exact-artefact copy are reference branches.
-- Execute Code Bundles from a Workspace SQL file or task, never from a notebook cell.
+- **Four interactive Workspace notebooks:**
+  1. `notebooks/01_credit_default_exploration.ipynb` — Stage 1: Explore (`RAW` contracts, grain, warmup, and 90-day delayed label finality).
+  2. `notebooks/02_credit_default_feature_engineering.ipynb` — Stage 2: Prepare (`Entity("CREDIT_ACCOUNT")`, 6 `V01` Feature Views, and immutable `CREDIT_DEVELOPMENT` / `CREDIT_VALIDATION` Datasets).
+  3. `notebooks/03_credit_default_model_experiment.ipynb` — Stage 3: Train & Screen in `DEV` (`ExperimentTracking`, `Tuner` HPO, manual holdout gates, refit on `CREDIT_REFIT`, evaluation on `CREDIT_HELD_OUT`, and `Model Registry` logging with lineage).
+  4. `notebooks/04_credit_default_release_serving_and_monitoring.ipynb` — Stages 4–7: Code Bundles & unattended candidate creation in `Pre-Prod` (`TEST`) and `PROD`, accountable owner approval (`PROMOTION_DECISION`), `ACTIVATE_SERVING` for **Warehouse Batch** (`SET ALIAS = PRODUCTION`) and **Online Gateway** (`SHADOW` vs. `SPLIT`), delayed 90-day ground-truth replay (`V_PREDICTION_OUTCOME_MATURITY`), and full-path rollback (`RECOVER_SERVING`).
+- Disposable demo schemas: `RAW`, `DEV`, `TEST` (**Pre-Prod**), `PROD`, `CONTROL`, `DEV_FEATURE_STORE`, `TEST_FEATURE_STORE`, `PROD_FEATURE_STORE`.
+- Production recommendation remains separate databases (`ML_DEV`, `ML_PREPROD`, `ML_PROD`) in one account.
+- Default serving path is warehouse batch (`SET ALIAS = PRODUCTION`). Online SPCS services (`jobs/deploy_service.py` with `autocapture=True`) and Gateways (`type: shadow_traffic` Preview and `type: traffic_split` GA) are demonstrated alongside batch in Notebook 04.
+- Tool boundary to state aloud: DCM declares scaffolding (schemas, roles, grants, suspended tasks, SQL procedures). The Snowflake CLI in CI performs release steps (`snow stage copy`, `snow sql -x` to create the release-specific bundle and call `EXECUTE CODE BUNDLE` / `CALL ACTIVATE_SERVING`). The Code Bundle (`jobs/train.py`, `jobs/deploy_service.py`) is the Python ML execution unit on a compute pool.
 
 ## Decision vocabulary
 
@@ -57,6 +58,8 @@ Fallback: if no target-executed records exist, label the walkthrough conceptual.
 3. Execute the bundle from that SQL file, not a notebook cell.
 4. Inspect `CODE_BUNDLE_HISTORY` and the durable pipeline-run receipt.
 
+Presenter note: in production, steps 1–2 are CI using the Snowflake CLI on merge (`snow stage copy`, then `snow sql -x` to create the bundle). Step 3 in Prod is a DCM-defined task that stays suspended until verified.
+
 Fallback: walk the specification and contract only. Never imply the command ran.
 
 ### Demo 3
@@ -65,6 +68,8 @@ Fallback: walk the specification and contract only. Never imply the command ran.
 2. Show a separately approved candidate and its evidence identity.
 3. Show the exact-version warehouse smoke test.
 4. Change the serving selection, verify, then restore the previous compatible path.
+
+Presenter note: approval is a Snowflake record; CI carries out activation only after reading it. For the online branch, the Gateway stays fixed and a new service per candidate is routed with `ALTER GATEWAY`. Not demonstrated.
 
 Fallback: walk the state diagram without invented scores or deployment claims.
 
@@ -83,14 +88,14 @@ Opening and architecture, slides 1-8: 17 minutes. Features and Demo 1, slides 9-
 
 If a live bundle exceeds its slot, show an explicitly identified prior completed run and describe the current run honestly.
 
-## Current readiness
+## Showcase asset map
 
-| Demo | Implemented | Statically tested | Target-executed | Timed / rehearsed | Fallback ready |
-|---|---|---|---|---|---|
-| 1 | Notebooks plus evidence handoff | 69 local tests passed | Inspected only | No | Conceptual walkthrough |
-| 2 | Payload, specification and inspect SQL | 69 local tests passed | Inspected only | No | Spec walkthrough |
-| 3 | Approval and serving-selection functions | 69 local tests passed | Inspected only | No | State-diagram walkthrough |
-| 4 | Replay, coverage and action contracts | 69 local tests passed | Inspected only | No | Evidence-contract walkthrough |
+| Demo / Stage | Standard Deck Slides | Primary Showcase Assets |
+|---|---|---|
+| 1: Explore, Features & Candidate Lineage | Slides 4–5, 10–11 | `notebooks/01_credit_default_exploration.ipynb`, `notebooks/02_credit_default_feature_engineering.ipynb`, `notebooks/03_credit_default_model_experiment.ipynb` |
+| 2: Code Bundles & Unattended Candidate Creation | Slides 8, 12 | `notebooks/04_credit_default_release_serving_and_monitoring.ipynb` (Section 1), `jobs/train.py`, `src/credit_default/training.py`, `deployment/05_code_bundle.sql`, `deployment/06_environment_releases.sql` |
+| 3: Owner Approval, Batch Alias & Gateway (`SHADOW` / `SPLIT`) | Slides 14–15 | `notebooks/04_credit_default_release_serving_and_monitoring.ipynb` (Sections 2–4), `jobs/deploy_service.py`, `src/credit_default/approval.py`, `deployment/04_control_contracts.sql` (`ACTIVATE_SERVING`, `RECOVER_SERVING`) |
+| 4: Delayed 90-Day Outcomes, Drift & Rollback | Slides 16–17 | `notebooks/04_credit_default_release_serving_and_monitoring.ipynb` (Section 5), `src/credit_default/monitoring.py`, `deployment/07_monitoring.sql` (`V_PREDICTION_OUTCOME_MATURITY`) |
 
 Confirmed 2026-10-02 via `snow sql -c sfseeurope-mstellwall-aws-us-west3` as `AGENT_USER` / `SYSADMIN` on `MSTELLWALL_AWS_US_WEST3`:
 - Present: `CRISK_DEMO_DB`, schemas `RAW`/`DEV`/`TEST`/`PROD`/`CONTROL`/`DEV_FEATURE_STORE`, roles, warehouse `CRISK_DEMO_WH` (SUSPENDED), pool `CRISK_DEMO_POOL` (SUSPENDED), bootstrap source tables, reserved `PIPELINE_RUN` and `PROMOTION_DECISION`.

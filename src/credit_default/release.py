@@ -70,3 +70,100 @@ def pipeline_release_decision(
         "serving_changed": False,
         "feature_store_schema": binding["feature_store_schema"],
     }
+
+
+def record_source_release(
+    session,
+    *,
+    release_id: str,
+    source_commit: str,
+    payload_digest: str,
+    manifest_digest: str = "WORKFLOW_V01",
+    specification_digest: str = "CODE_BUNDLE_V01",
+    runtime_contract: str = "V2.9-CPU-PY3.11",
+    project: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Insert an immutable reviewed source release into CONTROL.SOURCE_RELEASE."""
+    config = project or load_project()
+    database = config["snowflake"]["database"]
+    control_schema = config["snowflake"]["schemas"]["control"]
+    session.sql(
+        f"""
+        INSERT INTO {database}.{control_schema}.SOURCE_RELEASE (
+            RELEASE_ID, SOURCE_COMMIT, PAYLOAD_DIGEST, MANIFEST_DIGEST,
+            SPECIFICATION_DIGEST, RUNTIME_CONTRACT, APPROVED_SOURCE_IDENTITY,
+            CREATED_BY, CREATED_AT
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, CURRENT_ROLE(), CURRENT_TIMESTAMP()
+        """,
+        params=[
+            release_id,
+            source_commit,
+            payload_digest,
+            manifest_digest,
+            specification_digest,
+            runtime_contract,
+            f"{release_id}:{source_commit}",
+        ],
+    ).collect()
+    return {
+        "release_id": release_id,
+        "source_commit": source_commit,
+        "payload_digest": payload_digest,
+        "runtime_contract": runtime_contract,
+    }
+
+
+def record_environment_deployment(
+    session,
+    *,
+    release_id: str,
+    environment_name: str,
+    bundle_name: str,
+    pipeline_validation_status: str = "PENDING",
+    project: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Record a release-specific Code Bundle deployment in CONTROL.ENVIRONMENT_DEPLOYMENT."""
+    import hashlib
+    import json
+
+    config = project or load_project()
+    binding = resolve_binding(environment_name, config)
+    database = binding["database"]
+    control_schema = config["snowflake"]["schemas"]["control"]
+    clean_rel = "".join(c if c.isalnum() else "_" for c in release_id).upper()
+    deployment_id = f"DEPLOY_{environment_name}_{clean_rel}"
+    binding_digest = hashlib.sha256(
+        json.dumps(binding, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+    session.sql(
+        f"""
+        INSERT INTO {database}.{control_schema}.ENVIRONMENT_DEPLOYMENT (
+            DEPLOYMENT_ID, RELEASE_ID, ENVIRONMENT, BINDING_DIGEST,
+            BUNDLE_DATABASE, BUNDLE_SCHEMA, BUNDLE_NAME,
+            DEPLOYED_BY, PIPELINE_VALIDATION_STATUS, DEPLOYED_AT
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, CURRENT_ROLE(), ?, CURRENT_TIMESTAMP()
+        """,
+        params=[
+            deployment_id,
+            release_id,
+            environment_name,
+            binding_digest,
+            database,
+            binding["bundle_schema"],
+            bundle_name,
+            pipeline_validation_status,
+        ],
+    ).collect()
+    return {
+        "deployment_id": deployment_id,
+        "release_id": release_id,
+        "environment": environment_name,
+        "presentation_environment": binding["presentation_environment"],
+        "bundle_schema": binding["bundle_schema"],
+        "bundle_name": bundle_name,
+        "pipeline_validation_status": pipeline_validation_status,
+    }
+

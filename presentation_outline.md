@@ -1,244 +1,108 @@
-# MLOps with Snowflake — Presentation Outline
+# MLOps That Runs on Snowflake — Standard Presentation Outline
 
 ## Presentation contract
 
-- **Audience and format:** mixed technical audience; 90-minute, demo-led workshop; no participant labs. Keep 25 core slides, with detailed comparisons and implementation references skipped in the appendix.
-- **Outcome:** participants can explain how to release a repeatable training workflow, approve a model separately, and operate predictions with evidence, ownership and recovery.
-- **Positioning:** one recommended path, with explicit exceptions rather than a catalogue of equally weighted products.
-- **Recommended path:** private Git-backed Workspace → exploratory notebooks → tested Python modules → Python-entrypoint Code Bundle on a compute pool → Pre-Prod pipeline validation → approved code release in Prod → new Prod candidate → evaluation and approval → batch serving → monitoring and reviewed improvement.
-- **Environment default:** separate databases in one account, subject to organisational policy. Separate accounts when stronger administrative isolation or data locality requires it. The current disposable demo uses schemas; this is a teaching simplification, not the recommended production topology.
-- **Training-location default:** train candidates against production-governed data using approved code. Candidate creation is separate from the live serving path. Preserve exact-artefact promotion as a valid alternative when transfer is allowed and preserving tested identity is preferable.
-- **Scope boundary:** this outline describes the target operating model. It does not claim the repository already implements every stage or that any demonstration has run successfully.
-- **Existing master:** update [MLOps That Runs on Snowflake](https://docs.google.com/presentation/d/1kzQ48NUvei10eGSe7gbgXzJO61okbe-o2SOyqfH6pTE/edit) in place. Retain its lifecycle, evidence, rejection/rollback, monitoring and ownership material.
+- **Audience and format:** customer and technical architecture presentation (30–45 minutes, 18 core slides). Built on the official Snowflake Google Slides template (`17J0RNUWIHSyolEJ4dU6iOfmgyqmuEz-wYb2PI0UAzcU`) combining 14 native template layouts (`COVER-1`, `SAFE-HARBOR`, `AGENDA-1`, `CH-1` chapter dividers, `3COL-I`, `3COL-T`, `2COL-T`, `4COL-I`, `4COL-N`, `THANKS`) with 4 visual architecture diagrams inside official template frames (Slides 5, 8, 12, 15).
+- **Outcome:** attendees can explain how to isolate environments, separate pipeline releases from model approvals, orchestrate CI/CD and in-Snowflake training across DCM, the Snowflake CLI, and Code Bundles, and operate batch or online predictions with explicit ownership and rollback.
+- **Positioning:** one recommended production path with explicit architectural alternatives rather than a catalogue of equally weighted products.
+- **Recommended path:** private Git-backed Workspace → exploratory notebooks → tested Python modules → Python-entrypoint Code Bundle on a compute pool → Pre-Prod pipeline validation via GitHub Actions → approved code release in Prod → scheduled/on-demand Prod candidate creation via Task Graph → evaluation and accountable owner approval → warehouse batch serving (or stable Gateway + disposable SPCS services for online latency) → monitoring and reviewed improvement.
+- **Environment default:** separate databases (`ML_DEV`, `ML_PREPROD`, `ML_PROD`) in one Snowflake account. Separate accounts when stronger administrative isolation or data residency requires it; schemas in one database for small sandboxes and learning.
+- **Deck links:**
+  - **Standard Presentation (18 slides + 45 template toolbox slides):** [MLOps That Runs on Snowflake — Standard Presentation (October 2026)](https://docs.google.com/presentation/d/1QDS-NzGTbERi2C-TlQ4kyTJxYTRkmM6cC4Bvgo08V-g/edit)
+  - **Preserved Workshop Master (25 core slides + demo runbooks):** [MLOps That Runs on Snowflake (Workshop Master)](https://docs.google.com/presentation/d/1kzQ48NUvei10eGSe7gbgXzJO61okbe-o2SOyqfH6pTE/edit)
 
-Use a compact **Environment impact** callout at stage boundaries. The language is **same workflow, different bindings**, not “no difference”. Detailed matrices belong in the appendix; speaker notes carry implementation qualifications.
+---
 
-Product status is capability-specific. Documentation reviewed 1 October 2026; target-account availability and runtime remain rehearsal checks.
+## Slide-by-slide plan (18 slides)
 
-## 1. Establish the operating problem
+| # | Layout | Slide ID | Title | Visual / Content Focus |
+|---|---|---|---|---|
+| 1 | `COVER-1` | `g3dcdd2133c9_0_2` | `MLOPS THAT RUNS / ON SNOWFLAKE` | Standard Snowflake blue cover (`Repeatable pipelines and governed models`) |
+| 2 | `SAFE-HARBOR` | `g3dcdd2133c9_0_18` | `Safe Harbor and Disclaimers` | Fixed official disclaimer slide |
+| 3 | `AGENDA-1` | `g3dcdd2133c9_0_27` | `YOUR SESSION ROADMAP` | 1. The Operating Problem · 2. Isolation & Releases · 3. Features & Evidence · 4. CI/CD & Code Bundles · 5. Approval & Operations |
+| 4 | `3COL-I` | `g3dcdd2133c9_0_83` | `WHY MODELS FAIL AFTER DEPLOYMENT` | 3 columns w/ icons: `SHIFTING DATA`, `HIDDEN STATE`, `IMPLICIT OWNERS` |
+| 5 | `1COL` (Diagram 1) | `g3dcdd2133c9_0_37` | `FOLLOW ONE CONTINUOUS MLOPS LOOP` | Visual diagram: `BUILD & VALIDATE (ML)` (1. Explore, 2. Prepare, 3. Train) → central `4. REVIEW & APPROVE` gate → `SERVE & OPERATE (OPS)` (5. Serve, 6. Monitor, 7. Improve) + feedback loop bar |
+| 6 | `CH-1` | `g3dcdd2133c9_0_33` | `ARCHITECTURE / ISOLATION & RELEASES` | Snowflake blue/white colorstack chapter divider |
+| 7 | `3COL-T` | `g3dcdd2133c9_0_71` | `CHOOSE THE RIGHT ISOLATION BOUNDARY` | 3 columns: `SCHEMAS IN 1 DB` (simple/sandbox), `SEPARATE DBS` (recommended default), `SEPARATE ACCTS` (strict residency/blast-radius) |
+| 8 | `2COL` (Diagram 2) | `g3dcdd2133c9_0_44` | `PROMOTE CODE. GATE EACH MODEL.` | Visual diagram: Top `LOOP 1: PIPELINE RELEASE (GitHub Actions)` rail across `DEV DATABASE`, `PRE-PROD DATABASE` (`GATE 1: PIPELINE DECISION`), and `PROD DATABASE` (`LOOP 2: Train Prod Candidate` → `GATE 2: MODEL APPROVAL` → `Live Incumbent Serving`) |
+| 9 | `CH-1` | `SLIDES_API1771097440_4` | `ENGINEERING / FEATURES TO CODE BUNDLES` | Snowflake blue/white colorstack chapter divider |
+| 10 | `2COL-T` | `g3dcdd2133c9_0_52` | `REUSE FEATURES AND PIN THE CONTRACT` | 2 columns: `POINT-IN-TIME INTEGRITY` (Feature Store GA spine joins + immutable Dataset GA snapshots) vs. `SHARED VS OWNED FEATURES` (version pinning + release-time deployment) |
+| 11 | `4COL-I` | `g3dcdd2133c9_0_98` | `TRACE EVERY CANDIDATE END TO END` | 4 columns w/ icons: `1. FEATURES` → `2. DATASET` → `3. EXPERIMENT` → `4. REGISTRY` (`registration != approval`) |
+| 12 | `3COL` (Diagram 3) | `g3dcdd2133c9_0_62` | `ORCHESTRATE WITH CLEAR TOOL BOUNDARIES` | Visual diagram: `GITHUB ACTIONS RUNNER (OIDC + snow CLI only)` driving 3 lanes: `DCM PROJECTS (GA)` (scaffolding), `CODE BUNDLES (GA)` (`train.py` & `deploy_service.py` on compute pools), and `SQL CONTROL PROCEDURES` (`ACTIVATE_SERVING`) |
+| 13 | `CH-1` | `SLIDES_API1771097440_0` | `OPERATIONS / APPROVAL, SERVING & DRIFT` | Snowflake blue/white colorstack chapter divider |
+| 14 | `4COL-N` | `g3dcdd2133c9_0_116` | `A BETTER SCORE IS NOT APPROVAL` | 4 big numbers: `2` Independent releases, `3` Run states (`accepted`, `rejected`, `failed`), `1` Accountable owner gate (`PROMOTION_DECISION`), `100%` Full-path rollback |
+| 15 | `1COL` (Diagram 4) | `SLIDES_API1771097440_8` | `BATCH BY DEFAULT, GATEWAY FOR ONLINE` | Visual diagram: Top lane `WAREHOUSE BATCH INFERENCE (GA)` (`PROMOTION_DECISION` → `SET ALIAS = PRODUCTION` → warehouse scoring → durable output); Bottom lane `STABLE GATEWAY (GA) + DISPOSABLE SPCS SERVICES` (`Traffic Split GA` canary/cutover vs. `Shadow Model Preview` mirrored `v2` + `ACTIVATE_SERVING` / `RECOVER_SERVING`) |
+| 16 | `3COL-I` | `SLIDES_API1771097440_15` | `MONITOR SYSTEMS, DATA, AND OUTCOMES` | 3 columns w/ icons: `SYSTEM HEALTH`, `DATA & DRIFT` (Model Version & Gateway Monitors), `TRUE OUTCOMES` (delayed final labels & coverage) |
+| 17 | `4COL-I` | `SLIDES_API1771097440_30` | `MAKE OWNERSHIP EXPLICIT ACROSS ROLES` | 4 columns w/ icons: `DATA OWNER`, `DATA SCIENTIST`, `ML ENGINEER`, `MODEL OWNER` |
+| 18 | `THANKS` | `g3dcdd2133c9_0_175` | `THANK YOU` | Fixed closing slide |
 
-### 1.1 MLOps makes models operable
+---
 
-- People, engineering practices and platform capabilities take models into production and keep them useful, reproducible and recoverable.
-- Unchanged code can face changing data, outcomes and operating conditions. Successful deployment is not the finish line.
-- Governance, ownership, testing, source control, cost and automation span the complete lifecycle.
+## Section narrative and speaker notes
 
-### 1.2 Begin with the decision
+### Section 1: The Operating Problem (Slides 1–5)
 
-- Define who acts, the prediction horizon, costs of false positives/negatives, exclusions, authoritative outcome and delivery requirement.
-- Connect model metrics to an operational success measure and a baseline, before choosing an algorithm.
-- The synthetic credit-risk example estimates 90-day default risk for portfolio monitoring and case prioritisation. It is not an automated credit-approval or adverse-action system.
-- Real credit use needs independent model-risk review, fairness assessment and applicable controls beyond this teaching asset.
+- **Slide 4 (`WHY MODELS FAIL AFTER DEPLOYMENT`):**
+  - Deploying a model is the starting line, not the finish line. Even when code stands still, customer behaviour, upstream schemas, and delayed ground-truth outcomes change.
+  - Three failure modes dominate early ML deployments: unmonitored data/label shift, hidden notebook state (`pip install` in cells, personal roles, unversioned queries), and implicit ownership (treating a higher holdout metric as automatic permission to replace the live model).
+- **Slide 5 (`FOLLOW ONE CONTINUOUS MLOPS LOOP` — Diagram 1):**
+  - Frame the seven-stage loop as two halves joined by an explicit central gate: `BUILD & VALIDATE (ML)` (`1. Explore`, `2. Prepare`, `3. Train`) and `SERVE & OPERATE (OPS)` (`5. Serve`, `6. Monitor`, `7. Improve`), separated by `4. Review & Approve`.
+  - Emphasise the bottom feedback bar: `7. Improve` can mean retaining the incumbent, repairing an upstream data pipeline, retraining a fresh candidate, rolling back, or retiring the model—and every new candidate still passes through `4. Review & Approve`.
 
-### 1.3 Navigate one continuous loop
+### Section 2: Isolation & Releases (Slides 6–8)
 
-Explore → prepare → train → review → serve → monitor → improve.
+- **Slide 6 (`ARCHITECTURE / ISOLATION & RELEASES`):** Chapter transition.
+- **Slide 7 (`CHOOSE THE RIGHT ISOLATION BOUNDARY`):**
+  - Compare the three Snowflake isolation patterns using the principle **"same workflow, different environment bindings"**:
+    1. **Schemas in one database:** lowest overhead for disposable sandboxes and workshops, but shares database administration.
+    2. **Separate databases in one account (`ML_DEV`, `ML_PREPROD`, `ML_PROD`):** recommended production default for most teams—clean deployment, grant, and ownership boundaries without cross-account overhead.
+    3. **Separate accounts:** strongest blast-radius and data-residency boundary when required by enterprise policy.
+- **Slide 8 (`PROMOTE CODE. GATE EACH MODEL.` — Diagram 2):**
+  - Walk through the two distinct loops and two distinct decisions:
+    - **Loop 1 (Pipeline release — code):** triggered by a reviewed Git commit. GitHub Actions deploys environment scaffolding and promotes the immutable Code Bundle from `DEV` to `PRE-PROD` (`GATE 1: PIPELINE DECISION`) and into `PROD`.
+    - **Loop 2 (Prod candidate — model):** inside `PROD`, a Snowflake Task Graph runs the approved Code Bundle against production-governed data to produce a candidate and evaluation receipt. `GATE 2: MODEL APPROVAL` (`PROMOTION_DECISION`) is required before the live incumbent changes.
+  - Note that exact-artefact promotion across environments remains a valid alternative when model transfer is preferred over training in `PROD`.
 
-Improvement can mean retaining, repairing, retraining, rolling back or retiring. Feedback may return to any earlier stage. The diagram is an operating model, not a promise that every arrow is automatically captured as platform lineage.
+### Section 3: Features, Evidence & Orchestration (Slides 9–12)
 
-## 2. Make the minimum architecture decisions
+- **Slide 9 (`ENGINEERING / FEATURES TO CODE BUNDLES`):** Chapter transition.
+- **Slide 10 (`REUSE FEATURES AND PIN THE CONTRACT`):**
+  - **Point-in-time integrity:** use Feature Store (GA) spine timestamps and immutable Dataset (GA) snapshots so training only sees what was knowable at prediction time; fit preprocessors strictly on training splits.
+  - **Shared vs. model-owned features:** pin explicit shared Feature View versions rather than `"latest"`, validate schema/grain/freshness before training, and deploy changed model-owned definitions on release rather than recreating shared features on every run.
+- **Slide 11 (`TRACE EVERY CANDIDATE END TO END`):**
+  - Every candidate has an unbroken four-link evidence chain: pinned Feature View versions (`1. FEATURES`) → immutable Dataset snapshot (`2. DATASET`) → Experiment Tracking run with parameters and holdout metrics (`3. EXPERIMENT`) → versioned Model Registry candidate (`4. REGISTRY`).
+  - Reinforce the key invariant: **registration in the Model Registry is traceability, not production approval.**
+- **Slide 12 (`ORCHESTRATE WITH CLEAR TOOL BOUNDARIES` — Diagram 3):**
+  - Answer the common customer question: *"What runs in GitHub Actions vs. Snowflake, and what belongs in DCM vs. CLI vs. Code Bundles?"*
+  - **GitHub Actions runner (`snowflakedb/snowflake-actions@v3` with OIDC):** installs **only `snow` CLI** (never `snowflake-ml-python`) and uses three step types: `snow dcm plan/deploy`, `snow stage copy + snow sql` (to create a release-specific Code Bundle `CREDIT_RISK_TRAINING_<release_id>`), and `snow sql` (for validation and activation).
+  - **Three Snowflake execution layers:**
+    1. **DCM Projects (GA):** declarative environment scaffolding (schemas, warehouses, stages, roles, grants, control tables, suspended Task Graphs, and owner's-rights SQL procedures).
+    2. **Code Bundles (GA):** versioned Python ML execution on compute pools—both `jobs/train.py` (creating Feature Views, Datasets, Experiment runs, and Model versions at runtime) and `jobs/deploy_service.py` (creating and smoke-testing SPCS model services via `snowflake-ml-python` inside Snowflake). Note that `EXECUTE CODE BUNDLE` is caller's-rights only.
+    3. **SQL Control Procedures:** `ML_PROD.CONTROL.ACTIVATE_SERVING` (`EXECUTE AS OWNER`, owned by `prod_owner`) verifies `PROMOTION_DECISION` and `SERVICE_DEPLOYMENT` before changing the `PRODUCTION` alias or `ALTER GATEWAY` traffic weights.
 
-Show the recommendation early, then explain its consequences through the lifecycle. Keep full pros/cons in reference slides.
+### Section 4: Approval, Serving & Monitoring (Slides 13–17)
 
-### 2.1 Choose an environment boundary
-
-| Boundary | Advantage | Tradeoff | Choose when |
-|---|---|---|---|
-| Schemas in one database | Small operational footprint; convenient disposable demo | Shared database administration; isolation still depends on roles and grants | Learning, small teams, intentionally simple deployments |
-| **Separate databases, one account** | Clear deployment and ownership boundaries | Account-level administration, compute and limits still need explicit separation | **Workshop production default** |
-| Separate accounts | Stronger administrative boundary and locality controls | Per-account deployment, identity, data access and operations | Policy requires stronger isolation |
-
-- Within Dev, use private Git-backed Workspaces and per-developer object namespaces where needed. Collaborate through branches and pull requests, not a shared Git-backed Workspace.
-- Names and database boundaries alone do not establish least privilege. Treat development, deployment, candidate creation, live serving and approval as distinct responsibilities.
-- Reading or cloning production data into Dev requires an approved data-access policy; cloning is not anonymisation.
-
-### 2.2 Two releases, two decisions
-
-**Pipeline release:** promote the same reviewed source release, dependency policy and tests into each environment, with controlled environment-specific configuration. Record the source commit, release identifier, effective Code Bundle identity and configuration. Do not rebuild from a developer's live Workspace.
-
-**Model release:** a pipeline run produces a candidate and evidence. A separate decision authorises changing the live model. A new code release need not change the model, and a new model can come from unchanged code.
-
-| Strategy | What moves | What must be proved in Prod |
-|---|---|---|
-| **Promote code; train in Prod** | Approved source/runtime contract; owned feature definitions; pinned shared-feature references | Fresh evaluation of the newly trained candidate; exact-candidate inference checks; approval and rollback readiness |
-| Promote a validated artefact | Exact model artefact plus compatible feature/inference contract and evidence | Artefact identity, dependency resolution, permissions, serving compatibility and rollback |
-
-For the default path, Pre-Prod validates the **pipeline and serving contracts** using suitable approved data. It cannot approve the exact model that will be trained later in Prod. Keep the incumbent live while the new Prod candidate is evaluated in a controlled candidate path.
-
-Model sharing, replication and copying are different arrangements, not interchangeable promotion verbs. Shared consumption does not automatically create an independently managed production model. Cross-account deployment and ownership need an explicit design.
-
-### 2.3 Authoring, packaging and compute are separate choices
-
-- **Authoring:** Notebooks and Python files in Workspaces (GA); Remote Development with the Snowflake VS Code extension (Public Preview); or an established local IDE workflow.
-- **Packaging:** recommend a Python-entrypoint Code Bundle containing tested modules. A maintained notebook-entrypoint Code Bundle is also valid; notebook entrypoints require compute pools. ML Jobs remains a supported alternative for established or specialised job workflows.
-- **Compute:** recommend compute pools for Python-heavy training. Warehouse Code Bundles (Public Preview) suit SQL/Snowpark-heavy processing; warehouse size does not automatically parallelise arbitrary Python. Training compute and inference compute are independent decisions.
-- **Notebook discipline:** remove hidden state, parameterise inputs, run from a clean session and test modules independently. Notebook format itself does not prevent versioning or testing.
-
-Remote Development can mount Workspace files and use the Snowflake kernel. Standard Git on a persistent remote drive is a separate workflow from Workspace Git integration; do not promise they are the same repository state.
-
-## 3. Follow the lifecycle with explicit contracts
-
-Each stage answers: **decision → recommended path → evidence/exit criterion → environment impact**. Detailed alternatives and API examples are references, not mandatory detours.
-
-### 3.1 Explore: establish trustworthy inputs and outcomes
-
-- Inspect source grain, keys, coverage, missingness, availability timestamps, late arrivals, exclusions and label finality.
-- Record feature hypotheses and a simple baseline; keep held-out outcomes outside exploratory model selection.
-- **Environment impact:** use approved Dev inputs. Within an account, controlled reads or copies may suffice; across accounts, deliberately provision approved data through sharing, replication or a prepared extract. Connecting to Prod is a separate execution context, not a cross-account read grant.
-
-### 3.2 Prepare: reuse features without hiding dependencies
-
-- Recreate what was knowable at prediction time. Event time alone may be insufficient when data arrives late or is corrected.
-- Use versioned transformations and retained history, or immutable Dataset snapshots, to preserve training/evaluation evidence. A snapshot does not remove leakage.
-- Options remain direct tables/views, managed Feature Views and externally maintained Feature Views. Choose ownership and refresh responsibility before choosing a product.
-
-| Feature ownership | Release contains | Dependencies and gates |
-|---|---|---|
-| Existing shared features | Explicit name/version references and logical-to-physical environment mappings | Owner, compatible schema, entity grain, time semantics, freshness, history and retention |
-| New model-specific features | Owned definition code and deployment entrypoint | Source contracts, access, historical coverage, backfill and readiness |
-| **Combination** | Owned definitions plus pinned shared references | Both contracts; shared dependencies must be ready before the model pipeline consumes them |
-
-- Release order: confirm shared versions → deploy changed owned definitions → refresh/backfill and validate → freeze training inputs → train → evaluate candidate.
-- Deploy definitions when the feature release changes; do not recreate shared features or redeploy everything on every retraining run.
-- Missing or incompatible dependencies fail the gate. “Latest” is not a release contract.
-- Same feature code helps consistency but does not guarantee parity: validate versions, timestamps, preprocessing, null handling, freshness and serving inputs.
-- Consider shared ownership when a second consumer appears; agree the migration and compatibility policy rather than moving ownership implicitly.
-- **Environment impact:** bind approved versions to each environment. Cross-account Feature Store sharing and replication are documented; individual Feature Views require their associated metadata/entity tags. Replicating a database includes more than one feature-store schema.
-- **Demo 1:** trace prepared feature and Dataset evidence through an Experiment to a candidate; show selected raw-versus-derived evidence rather than spending the slot rebuilding all features.
-
-### 3.3 Train: preserve evidence, then make the workflow repeatable
-
-- Separate training, validation/tuning and final holdout. Fit preprocessing only on training inputs. Compare matching cohorts and label maturity.
-- Record feature/Dataset versions, commit, configuration, runtime, seed, parameters, metrics and candidate identity. A seed does not promise bitwise reproducibility.
-- Keep model logging inside the relevant active Experiment run. Register a traceable candidate; registration is not approval.
-
-**Workflow inputs:** feature/Dataset references, time window, label definition, evaluation policy, parameters, runtime/dependencies and target environment.
-
-**Workflow outputs:** run ID, model version, metrics, acceptance evidence, release/configuration IDs and durable `accepted`, `rejected` or `failed` status. `accepted` means eligible for the separate promotion decision.
-
-- Extract tested modules and an entrypoint; run unattended on demand before adding a schedule.
-- Validate dependency resolution and Registry target platforms separately from the training runtime.
-- **Demo 2:** inspect the source/specification, execute a Code Bundle from a Workspace SQL file, then inspect history and durable result. Do not invoke it from a notebook cell.
-- **Environment impact:** same workflow, different source mappings, object names, compute, identity and dependencies. Deploy the approved source independently in each account. Record effective bundle/configuration identity rather than assuming local version labels prove equivalence.
-
-### 3.4 Orchestrate and validate the pipeline release
-
-Validate data → freeze Dataset → train/evaluate/log → persist candidate and decision evidence.
-
-- Task Graphs (GA) fit Snowflake-centric orchestration; an established external orchestrator can coordinate the same execution units across systems.
-- Pass durable identifiers rather than process memory. Experiment context does not implicitly cross independent tasks or workers.
-- Test retries, idempotency, duplicate prevention, concurrency and partial failure. Missing evidence blocks progress.
-- Pre-Prod proves data contracts, point-in-time behaviour, runtime and execution identity, inference compatibility, monitor/outcome joins, failure recovery and rollback.
-- Deploy schedules suspended. Enable only after on-demand execution and release checks pass.
-- Control training/tuning budgets, compute idle behaviour, snapshot retention and monitoring refresh cost.
-
-### 3.5 Review: evaluate the actual candidate and authorise separately
-
-- Evaluate against baseline/incumbent on comparable evidence, including segment support, required fairness/stability, data quality and label maturity.
-- Test the exact candidate's signature, dependencies, intended inference path and compatible rollback target.
-- Combine deterministic screening with human approval where risk requires it. Record policy version, candidate/incumbent IDs, evidence, decision and accountable approver.
-- For the default path, these checks apply to the **new Prod-trained candidate** before the live path changes. This is not unrestricted exploratory training in the serving environment.
-- **Demo 3:** reject a candidate without changing the incumbent; approve a different candidate; demonstrate or walk through promotion, verification and full-path rollback.
-- **Environment impact:** separate candidate and serving responsibilities in all topologies. Alias/tag-in-place is a lifecycle convention, not schema or database isolation. Artefact-copy promotion belongs to the alternative path.
-
-### 3.6 Serve: choose the smallest path that meets the decision
-
-- **Default:** warehouse batch inference (GA), explicit model resolution, compatible features, prediction IDs/timestamps, durable outputs and an owner.
-- **Alternatives:** job-based batch on compute pools for large asynchronous work; online services for a genuine request-time requirement. These introduce additional completion/capacity/availability contracts.
-- A Registry alias can steer new batch calls; it does not retarget an existing online service.
-- **Online branch:** a Gateway (GA) provides a URL stable for the gateway object's lifetime and traffic splitting between services. Shadow traffic is Public Preview. Do not recreate the gateway as the normal model-upgrade operation.
-- Pre-Prod validates the endpoint pattern and integration contract with its own service/gateway. In Prod, deploy the new Prod candidate service, run controlled exact-candidate tests, then authorise traffic changes. Do not route to a Pre-Prod service as a shortcut.
-- Gateway-per-environment applies to the online branch only: optional in Dev, production-like in Pre-Prod, stable consumer entrypoint in Prod. Batch-only systems do not need one.
-- **Environment impact:** names, output locations, compute, caller permissions and endpoints differ. Cross-account clients select account-specific endpoints and authentication.
-
-### 3.7 Monitor: connect predictions to trustworthy outcomes
-
-- **System:** failures, latency, throughput, pipeline/monitor status and capacity.
-- **Data:** schema, freshness, missingness, population and prediction drift.
-- **Outcomes:** performance against final labels, segment behaviour, sample sufficiency and business utility.
-- Persist prediction ID, time, model version and required feature/score evidence. Join authoritative delayed outcomes with deduplication and finality checks; report match coverage and unmatched/immature cohorts. Unknown is not negative.
-- Drift needs representative inputs and a baseline; it does not prove degraded performance. Performance needs sufficiently mature labels.
-- Model-version monitors read a named typed source for one model version. Gateway monitors compare online services. Auto Capture supplements operational telemetry; direct-service captures need preparation for a version-monitor source.
-- **Environment impact:** test the monitor, label join and alert/action path in Pre-Prod. Meaningful ongoing model-performance monitoring is primarily Prod. Cross-account findings return through an approved evidence/notification path, not unrestricted raw-log copying.
-- **Demo 4:** trace one prediction to its outcome, distinguish drift from performance, inspect coverage and choose an operating action.
-
-### 3.8 Improve: investigate before retraining
-
-- Triggers include a scheduled review, enough new final labels, performance degradation, a source/feature change, drift or a business event.
-- First distinguish model change from data-pipeline repair. Drift alone does not justify retraining.
-- Outcomes: retain, repair, retrain a candidate, roll back or retire. A retrained candidate still passes fresh evaluation and approval.
-- Reuse the approved workflow; version changes to features, policy or code explicitly. Apply budgets, owner escalation and retirement/retention rules.
-- **Environment impact:** Dev investigates and changes source; Pre-Prod validates the release; Prod runs the approved evaluation/training workflow without automatically replacing the incumbent.
-
-## 4. Ownership and close
-
-- Data owner: source contracts, freshness, history and authoritative final labels.
-- Data science: hypotheses, evaluation, candidate evidence and behaviour investigation.
-- ML engineering: release packaging, execution, orchestration, telemetry and recovery.
-- Production/model owner: risk acceptance, approval, incidents, exceptions and retirement.
-- One person may hold several responsibilities; no responsibility should be implicit.
-- Revisit the reference architecture and recommendations. End with: **Can this model run, fail safely and recover without its original author?**
-
-## 5. Core deck and timing
-
-Keep the existing 25-slide core. Add environment, early architecture and shared-feature slides; move the detailed feature-pipeline, compute and artefact-versus-code comparisons to the appendix. Preserve their content rather than discard it.
-
-| Slide | Title | Treatment |
-|---|---|---|
-| 1 | MLOPS THAT RUNS ON SNOWFLAKE | Existing cover; update facilitator runbook |
-| 2 | Safe Harbor and Disclaimers | Preserve official text |
-| 3 | MLOPS MAKES MODELS OPERABLE | Retain |
-| 4 | CODE CAN STAND STILL. DATA CANNOT. | Retain |
-| 5 | FOLLOW THE MLOPS LOOP | Retain navigation |
-| 6 | START WITH THE DECISION | Retain; connect to teaching use case |
-| 7 | CHOOSE THE ISOLATION BOUNDARY | New concise three-option comparison |
-| 8 | PROMOTE CODE. GATE EACH MODEL. | New early reference architecture |
-| 9 | RECREATE THE PREDICTION MOMENT | Retain |
-| 10 | REUSE FEATURES, PIN THE CONTRACT | New shared/owned/readiness visual |
-| 11 | COMPARE RUNS, PRESERVE EVIDENCE | Retain |
-| 12 | DEMO 1: TRACE A CANDIDATE | Evidence-first demo/runbook |
-| 13 | PACKAGE CODE, NOT NOTEBOOK STATE | Clarify entrypoint vs packaging; show compute-pool default |
-| 14 | DEMO 2: EXECUTE A CODE BUNDLE | On-demand contract and result |
-| 15 | ORCHESTRATE DURABLE HANDOFFS | Retain pre-scheduling discipline |
-| 16 | TWO RELEASES, TWO DECISIONS | Make Prod candidate evaluation explicit |
-| 17 | A BETTER SCORE IS NOT APPROVAL | Retain |
-| 18 | DEMO 3: REJECT, PROMOTE, ROLL BACK | Preserve rejection and complete recovery |
-| 19 | CHOOSE HOW PREDICTIONS ARRIVE | Batch default; online branch in notes/reference |
-| 20 | WATCH SYSTEMS, DATA, AND OUTCOMES | Retain; Pre-Prod test path |
-| 21 | DEMO 4: TURN OUTCOMES INTO ACTION | Finality, coverage and action |
-| 22 | RETRAIN ONLY WHEN JUSTIFIED | Retain |
-| 23 | MAKE OWNERSHIP EXPLICIT | Retain |
-| 24 | BUILD ONE OPERABLE MODEL FIRST | Recap default; return to architecture |
-| 25 | Thank You | Questions; references skipped |
-
-Timing: opening/decisions (1–8) 17 minutes; features/evidence (9–12) 16 minutes including Demo 1; packaging/orchestration (13–15) 14 minutes including Demo 2; release/review (16–18) 13 minutes including Demo 3; serving/monitoring/improvement (19–22) 15 minutes including Demo 4; ownership/close (23–25) 5 minutes; protected questions and demo contingency 10 minutes. **Total: 90 minutes.**
-
-References: detailed feature-pipeline choice, compute choice, artefact-versus-code promotion, environment bindings, bundle specifications/commands, authoring alternatives, execution units, training scale, Gateway rollout, monitor selection and source references. Keep existing template toolbox slides skipped.
-
-## 6. Demo readiness and rehearsal gate
-
-As of this review, repository increments 1–3 are implemented but awaiting target-account/Workspace execution. Increments 4–9 are planned: extracted modules and Demo 1 handoff, Code Bundle release, Pre-Prod/Prod training, approval and batch serving, delayed-outcome monitoring, then separately authorised rehearsal. Do not label any demo “live verified” without recorded rehearsal evidence. See `docs/demo-runbook.md`.
-
-| Demo | Time within section | Prerequisites and evidence | Current boundary / fallback |
-|---|---|---|---|
-| 1: Trace a candidate | 6 min | Executed notebooks; feature/Dataset IDs; comparable Experiment runs; linked Registry candidate; lineage access | Assets implemented, runtime pending. Prepared evidence walkthrough only when genuine records exist; otherwise label it a conceptual walkthrough |
-| 2: Execute a bundle | 5 min | Extracted modules, specification, approved dependencies/identity, target bundle support, durable result and execution history | Implementation planned. Walk source/spec/contract; never imply the command ran |
-| 3: Reject/promote/rollback | 6 min | Incumbent and candidate, persisted gate records, authorised isolated serving path, exact-candidate smoke test and verified recovery | Implementation planned. Walk the state diagram without invented scores or deployment claims |
-| 4: Outcomes into action | 5 min | Prediction records, final/pending outcomes, typed monitor source/baseline, coverage and action policy | Implementation planned. Walk the evidence contract without fabricated monitoring charts |
-
-Before presenting: verify account/region/edition, product status, runtime/packages, actual execution identity, feature readiness, all four evidence paths and rollback. Prepare honest fallback material. Never rehearse this disposable workload in Snowhouse. Presentation updates do not authorise deploying or modifying Snowflake resources.
-
-The older papers and demo roadmap use NPO/ML Job terminology and an exact-model-copy path. This outline is the updated workshop recommendation; aligning the implementation roadmap and building later phases is separate work, not an assertion that those assets already exist.
-
-## 7. Capability references
-
-- [Code Bundles](https://docs.snowflake.com/en/developer-guide/code-bundles/code-bundles): compute-pool execution GA; warehouse execution, inline overrides and new clients Public Preview. Availability must be checked at capability level.
-- [Code Bundle execution](https://docs.snowflake.com/en/sql-reference/sql/execute-code-bundle): Python and notebook entrypoints; notebooks on compute pools; no nested execution from notebook cells.
-- [Bundle specification](https://docs.snowflake.com/en/developer-guide/code-bundles/code-bundle-yml-reference): compute, runtime and dependency configuration.
-- [Remote Development](https://docs.snowflake.com/en/user-guide/vscode-ext-remote-development): Public Preview; extension/runtime prerequisites and Workspace mounting.
-- [Feature replication and sharing](https://docs.snowflake.com/en/developer-guide/snowflake-ml/feature-store/replication-sharing): whole-store and individual-view arrangements and metadata dependencies.
-- [Model management](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/model-management): versions, aliases and same-account copies.
-- [Model Registry](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/overview): dependency/target-platform contracts and sharing/replication.
-- [Gateway routing](https://docs.snowflake.com/en/developer-guide/snowflake-ml/inference/stable-endpoints-api-reference): lifetime-stable URL, traffic split and Preview shadow traffic.
-- [Model observability](https://docs.snowflake.com/en/developer-guide/snowflake-ml/model-registry/model-observability): version monitoring, baseline and outcome evidence.
-- [Monitor source contract](https://docs.snowflake.com/en/sql-reference/sql/create-model-monitor): authoritative task-specific source types.
+- **Slide 13 (`OPERATIONS / APPROVAL, SERVING & DRIFT`):** Chapter transition.
+- **Slide 14 (`A BETTER SCORE IS NOT APPROVAL`):**
+  - Summarise the release and governance numbers:
+    - **`2` Independent releases:** Pre-Prod approves the pipeline release; Prod evaluates and approves the trained model.
+    - **`3` Run states:** `accepted` (passed deterministic policy checks; eligible for review), `rejected` (incumbent stays live), or `failed` (technical/contract failure).
+    - **`1` Accountable owner gate:** `PROMOTION_DECISION` recorded in Snowflake before any serving change is allowed.
+    - **`100%` Full-path rollback:** `RECOVER_SERVING` restores the compatible model version, alias or Gateway weights, and feature contract together.
+- **Slide 15 (`BATCH BY DEFAULT, GATEWAY FOR ONLINE` — Diagram 4):**
+  - **Top lane — Warehouse Batch Inference (GA) (Recommended default):** once `PROMOTION_DECISION` is verified, `ACTIVATE_SERVING` moves the `PRODUCTION` model alias (`ALTER MODEL ... VERSION ... SET ALIAS = PRODUCTION`), scheduled batch scoring runs on a virtual warehouse, and predictions are written with prediction IDs, timestamps, and model version for downstream outcome joins.
+  - **Bottom lane — Online Reference Branch (Stable Gateway GA + Disposable SPCS Services):**
+    - The **Gateway (`CREATE GATEWAY`)** is created once per environment and owns the permanent URL for callers.
+    - **Per-version SPCS services** (`CREDIT_RISK_SVC_V2`, created with `autocapture=True` when online comparison is needed) are disposable compute endpoints created and smoke-tested by `EXECUTE CODE BUNDLE ... ENTRYPOINT = 'jobs/deploy_service.py'`.
+    - `CALL ML_PROD.CONTROL.ACTIVATE_SERVING(...)` verifies approval and smoke-test records, runs `ALTER GATEWAY ... FROM SPECIFICATION`, and supports **two online rollout patterns**:
+      1. **Traffic Split (`type: traffic_split`, GA):** weighted live routing summing to `100` (e.g., `90/10` canary then `100%` cutover), keeping `v1` warm as the rollback target.
+      2. **Shadow Model (`type: shadow_traffic`, Preview):** `primary` (`v1`) continues serving `100%` of caller responses while a configured percentage of live requests is mirrored to `shadow` (`v2`) with zero impact on production callers—ideal for validating live latency, feature distributions, and score agreement via Auto Capture and a Gateway Model Monitor before routing live responses to `v2`.
+- **Slide 16 (`MONITOR SYSTEMS, DATA, AND OUTCOMES`):**
+  - Separate monitoring into three distinct questions:
+    1. **System health:** did tasks, services, and monitors run within latency and capacity budgets?
+    2. **Data & drift:** have feature distributions or prediction scores shifted against baseline in Model Version Monitors (GA, source-table based) or Gateway Model Monitors (Preview, comparing challenger/shadow services against `BASE_SERVICE` using Auto Capture logs)? Drift is an investigation trigger, not proof of accuracy loss or an automatic retraining trigger.
+    3. **True outcomes:** how did predictions perform once delayed ground-truth labels (e.g., 90-day credit default) matured? Always check join coverage and treat immature/unmatched cohorts as unknown, never as negative outcomes.
+- **Slide 17 (`MAKE OWNERSHIP EXPLICIT ACROSS ROLES`):**
+  - Close with the four explicit accountabilities: **Data Owner**, **Data Scientist**, **ML Engineer**, and **Model / Production Owner**. One person may hold multiple hats in a smaller team, but no responsibility is left implicit.
+  - Closing test: *"Can this model run, fail safely, and recover without its original author?"*
+- **Slide 18 (`THANK YOU`):** Q&A and discussion.

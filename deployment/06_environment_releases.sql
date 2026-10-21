@@ -20,6 +20,18 @@ CREATE CODE BUNDLE IF NOT EXISTS {{DATABASE}}.{{PROD_SCHEMA}}.CRISK_DEMO_TRAIN_R
   COMMENT = 'Prod copy of the reviewed payload; trains a new candidate only';
 SHOW CODE BUNDLES;
 
+-- Loop 2: Prod candidate creation Task Graph (deployed SUSPENDED by default).
+CREATE OR REPLACE TASK {{DATABASE}}.{{PROD_SCHEMA}}.CRISK_DEMO_TRAIN_CANDIDATE_TASK
+  WAREHOUSE = {{WAREHOUSE}}
+  SCHEDULE = 'USING CRON 0 4 * * 1 UTC'
+  COMMENT = 'Loop 2: Executes the approved Code Bundle in PROD to register and screen a candidate model'
+AS
+  EXECUTE CODE BUNDLE {{DATABASE}}.{{PROD_SCHEMA}}.CRISK_DEMO_TRAIN_R_PENDING
+    ENTRYPOINT = 'jobs/train.py'
+    ARGUMENTS = ('--environment', 'PROD', '--release-id', 'R_PENDING', '--dataset-version', 'V01');
+
+SHOW TASKS IN SCHEMA {{DATABASE}}.{{PROD_SCHEMA}};
+
 -- Authorised Pre-Prod execution example. Leave commented until rehearsal.
 -- EXECUTE CODE BUNDLE {{DATABASE}}.{{TEST_SCHEMA}}.CRISK_DEMO_TRAIN_R_PENDING
 --   ENTRYPOINT = 'jobs/train.py'

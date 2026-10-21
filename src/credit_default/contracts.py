@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -8,6 +9,24 @@ import yaml
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_PROJECT_PATH = PROJECT_DIR / "project.yaml"
+
+
+def get_session(connection_name: str | None = None):
+    """Return the active Snowflake Workspace/Code Bundle session or a CLI session."""
+    try:
+        from snowflake.snowpark.context import get_active_session
+
+        return get_active_session()
+    except Exception:
+        from snowflake.snowpark import Session
+
+        resolved_conn = (
+            connection_name
+            or os.getenv("SNOWFLAKE_CONNECTION_NAME")
+            or os.getenv("SNOWFLAKE_DEFAULT_CONNECTION_NAME")
+            or "default"
+        )
+        return Session.builder.config("connection_name", resolved_conn).create()
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

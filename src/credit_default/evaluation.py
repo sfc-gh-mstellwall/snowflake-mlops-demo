@@ -137,3 +137,47 @@ def decide_screening(gate_table: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
         "gates": gates,
         "changes_live_serving": False,
     }
+
+
+def evaluate_candidate(
+    held_out_pdf: Any,
+    validation_pdf: Any,
+    probabilities: Any,
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Evaluate held-out predictions against the workflow screening gates."""
+    from sklearn.metrics import average_precision_score, brier_score_loss, roc_auc_score
+
+    target_col = contract["model"]["target_column"]
+    categorical_features = list(contract["features"]["categorical"])
+    gates_cfg = contract["screening_gates"]
+    support_cfg = gates_cfg["segment_support"]
+
+    y_true = held_out_pdf[target_column := target_col].astype(int).to_numpy()
+    metrics = {
+        "roc_auc": float(roc_auc_score(y_true, probabilities)),
+        "average_precision": float(average_precision_score(y_true, probabilities)),
+        "brier_score": float(brier_score_loss(y_true, probabilities)),
+    }
+    scored_frame = held_out_pdf[categorical_features + [target_column]].copy()
+    scored_frame["PROBABILITY"] = probabilities
+
+    segments = segment_support_rows(
+        scored_frame.to_dict(orient="records"),
+        validation_pdf[categorical_features].to_dict(orient="records"),
+        target_column=target_column,
+        categorical_features=categorical_features,
+        segment_support=support_cfg,
+        minimum_segment_roc_auc=float(gates_cfg["minimum_segment_roc_auc"]),
+        score_column="PROBABILITY",
+        roc_auc_fn=roc_auc_score,
+    )
+    gate_table = screening_gate_table(metrics, segments, gates_cfg)
+    screening = decide_screening(gate_table)
+    return {
+        "metrics": metrics,
+        "segments": segments,
+        "gate_table": gate_table,
+        "screening": screening,
+    }
+
