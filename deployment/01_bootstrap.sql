@@ -227,7 +227,6 @@ CREATE OR REPLACE TABLE FACT_ACCOUNT_DAILY_SNAPSHOT (
   DAYS_PAST_DUE NUMBER(4,0) COMMENT 'Consecutive calendar days the facility is past due, capped at 120',
   ARREARS_AMOUNT NUMBER(12,2) COMMENT 'Overdue amount associated with the current delinquency state',
   ACCOUNT_STATUS VARCHAR COMMENT 'Servicing status on SNAPSHOT_DATE: CURRENT, DELINQUENT, or CHARGED_OFF',
-  DATA_SCENARIO VARCHAR COMMENT 'Controlled source regime with values STABLE or DRIFT; excluded from model features',
   GENERATED_AT TIMESTAMP_NTZ COMMENT 'Timestamp when the source record was generated'
 ) COMMENT = 'Daily revolving-credit servicing state; one row per account and calendar date';
 
@@ -308,7 +307,6 @@ SELECT
     WHEN DAYS_PAST_DUE_RAW > 0 THEN 'DELINQUENT'
     ELSE 'CURRENT'
   END,
-  IFF(SNAPSHOT_DATE >= '{{DRIFT_START_DATE}}'::DATE, 'DRIFT', 'STABLE'),
   '{{AS_OF_DATE}} 00:00:00'::TIMESTAMP_NTZ
 FROM states;
 

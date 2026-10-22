@@ -82,7 +82,7 @@ def ensure_environment_feature_store(
         .join(
             financials,
             (customers["CUSTOMER_ID"] == financials["CUSTOMER_ID"])
-            & (financials["SNAPSHOT_DATE"] <= monthly_daily["SNAPSHOT_DATE"]),
+            & (financials["SNAPSHOT_DATE"] == F.trunc(monthly_daily["SNAPSHOT_DATE"], F.lit("MONTH"))),
         )
         .join(
             limit_events,
@@ -93,6 +93,7 @@ def ensure_environment_feature_store(
         .select(
             monthly_daily["ACCOUNT_ID"].alias("ACCOUNT_ID"),
             monthly_daily["SNAPSHOT_DATE"].alias("MNTH_DAY_SNAPSHOT_DATE"),
+            financials["SNAPSHOT_DATE"].alias("FINANCIAL_SNAPSHOT_DATE"),
             "EVENT_DATE",
             "PRODUCT_CODE",
             "ORIGINATION_CHANNEL",
@@ -105,7 +106,7 @@ def ensure_environment_feature_store(
         )
     )
     latest_available = Window.partition_by("ACCOUNT_ID", "MNTH_DAY_SNAPSHOT_DATE").order_by(
-        F.col("MNTH_DAY_SNAPSHOT_DATE").desc(), F.col("EVENT_DATE").desc_nulls_last()
+        F.col("FINANCIAL_SNAPSHOT_DATE").desc(), F.col("EVENT_DATE").desc_nulls_last()
     )
     profile_df = (
         profile_candidates.with_column("AVAILABILITY_ORDER", F.row_number().over(latest_available))

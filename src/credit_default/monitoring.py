@@ -226,7 +226,8 @@ def evaluate_delayed_outcomes(
     *,
     replay_date: str,
     model_version: str | None = None,
-    drift_detected: bool = False,
+    drift_detected: bool | None = None,
+    score_drift_threshold: float = 0.02,
     project: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Join CONTROL.PREDICTION_RECORD to RAW.ACCOUNT_OBSERVATION via Snowpark pushdown without treating pending labels as 0."""
@@ -260,6 +261,28 @@ def evaluate_delayed_outcomes(
         filtered_predictions = filtered_predictions.filter(
             F.col("MODEL_VERSION") == F.lit(model_version)
         )
+
+    # Detect prediction score drift directly in Snowflake by comparing the earliest scored
+    # cohort (baseline) against the most recent scored cohort up to replay_date.
+    cohort_scores_pdf = (
+        filtered_predictions.group_by("OBSERVATION_DATE")
+        .agg(F.avg(F.col("SCORE").cast("FLOAT")).alias("AVG_SCORE"))
+        .sort("OBSERVATION_DATE")
+        .to_pandas()
+    )
+    baseline_avg_score: float | None = None
+    latest_avg_score: float | None = None
+    score_drift_delta: float | None = None
+    if len(cohort_scores_pdf) > 0:
+        baseline_avg_score = float(cohort_scores_pdf["AVG_SCORE"].iloc[0])
+        latest_avg_score = float(cohort_scores_pdf["AVG_SCORE"].iloc[-1])
+        score_drift_delta = abs(latest_avg_score - baseline_avg_score)
+    computed_drift_detected = bool(
+        score_drift_delta is not None and score_drift_delta >= score_drift_threshold
+    )
+    effective_drift_detected = (
+        computed_drift_detected if drift_detected is None else bool(drift_detected)
+    )
 
     joined_df = (
         filtered_predictions.join(
@@ -345,13 +368,17 @@ def evaluate_delayed_outcomes(
             )
 
     rec = recommended_action(
-        drift_detected=drift_detected,
+        drift_detected=effective_drift_detected,
         performance_degraded=performance_degraded,
         coverage=coverage,
     )
     return {
         "replay_date": replay_date,
         "coverage": coverage,
+        "baseline_avg_score": baseline_avg_score,
+        "latest_avg_score": latest_avg_score,
+        "score_drift_delta": score_drift_delta,
+        "drift_detected": effective_drift_detected,
         "matured_metrics": metrics,
         "performance_degraded": performance_degraded,
         "recommendation": rec,
