@@ -164,25 +164,34 @@ def ensure_environment_feature_store(
         )
     )
 
+    # Date-based 30d/90d balance lookups (not row offsets) so gaps in daily snapshots yield NULL.
+    balance_30d_ago = daily.select(
+        "ACCOUNT_ID",
+        F.dateadd("day", F.lit(30), F.col("SNAPSHOT_DATE")).alias("SNAPSHOT_DATE"),
+        F.col("OUTSTANDING_BALANCE").alias("BALANCE_30D_AGO"),
+    )
+    balance_90d_ago = daily.select(
+        "ACCOUNT_ID",
+        F.dateadd("day", F.lit(90), F.col("SNAPSHOT_DATE")).alias("SNAPSHOT_DATE"),
+        F.col("OUTSTANDING_BALANCE").alias("BALANCE_90D_AGO"),
+    )
     balance_base_df = (
-        servicing.select(
+        servicing.filter(F.dayofmonth(F.dateadd("day", F.lit(1), F.col("SNAPSHOT_DATE"))) == 1)
+        .join(balance_30d_ago, ["ACCOUNT_ID", "SNAPSHOT_DATE"], how="left")
+        .join(balance_90d_ago, ["ACCOUNT_ID", "SNAPSHOT_DATE"], how="left")
+        .select(
             "ACCOUNT_ID",
             F.dateadd("day", F.lit(1), F.col("SNAPSHOT_DATE"))
             .cast("timestamp_ntz")
             .alias("BALANCE_TS"),
             F.col("OUTSTANDING_BALANCE").alias("CURRENT_BALANCE"),
             F.col("UTILISATION").alias("CURRENT_UTILISATION"),
-            (
-                F.col("OUTSTANDING_BALANCE") - F.lag("OUTSTANDING_BALANCE", 30).over(account_order)
-            ).alias("BALANCE_CHANGE_30D"),
-            (
-                F.col("OUTSTANDING_BALANCE") - F.lag("OUTSTANDING_BALANCE", 90).over(account_order)
-            ).alias("BALANCE_CHANGE_90D"),
+            (F.col("OUTSTANDING_BALANCE") - F.col("BALANCE_30D_AGO")).alias("BALANCE_CHANGE_30D"),
+            (F.col("OUTSTANDING_BALANCE") - F.col("BALANCE_90D_AGO")).alias("BALANCE_CHANGE_90D"),
             div0null(F.col("AVAILABLE_CREDIT"), F.col("CREDIT_LIMIT")).alias(
                 "AVAILABLE_CREDIT_RATIO"
             ),
         )
-        .filter(F.dayofmonth("BALANCE_TS") == 1)
     )
 
     delinquency_df = (
