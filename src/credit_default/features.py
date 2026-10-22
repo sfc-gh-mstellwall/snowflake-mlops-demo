@@ -318,11 +318,15 @@ def ensure_environment_feature_store(
         ),
         how="left",
     )
+    # Project unambiguous names; the join keeps both prefixed ACCOUNT_ID columns.
+    payment_window = payment_events.select(
+        observation_dates["ACCOUNT_ID"].alias("ACCOUNT_ID"),
+        observation_dates["FEATURE_DATE"].alias("FEATURE_DATE"),
+        payments["PAYMENT_DATE"].alias("PAYMENT_DATE"),
+        payments["PAYMENT_AMOUNT"].alias("PAYMENT_AMOUNT"),
+    )
     payment_derived = (
-        payment_events.group_by(
-            observation_dates["ACCOUNT_ID"],
-            observation_dates["FEATURE_DATE"],
-        )
+        payment_window.group_by("ACCOUNT_ID", "FEATURE_DATE")
         .agg(
             F.sum(
                 F.iff(

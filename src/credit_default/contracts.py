@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import functools
+import operator
 import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -40,10 +42,7 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 def lookup_dotted(config: Mapping[str, Any], dotted_path: str) -> Any:
     """Resolve a dotted key path (such as 'data.drift_start_date') against project.yaml."""
-    current: Any = config
-    for part in dotted_path.split("."):
-        current = current[part]
-    return current
+    return functools.reduce(operator.getitem, dotted_path.split("."), config)
 
 
 def load_project(path: Path | None = None) -> dict[str, Any]:

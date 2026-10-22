@@ -254,13 +254,13 @@ def evaluate_delayed_outcomes(
     )
 
     replay_date_expr = F.to_date(F.lit(replay_date))
-    filtered_predictions = predictions_df.filter(
-        F.col("OBSERVATION_DATE") <= replay_date_expr
+    date_filter = F.col("OBSERVATION_DATE") <= replay_date_expr
+    prediction_filter = (
+        date_filter & (F.col("MODEL_VERSION") == F.lit(model_version))
+        if model_version
+        else date_filter
     )
-    if model_version:
-        filtered_predictions = filtered_predictions.filter(
-            F.col("MODEL_VERSION") == F.lit(model_version)
-        )
+    filtered_predictions = predictions_df.filter(prediction_filter)
 
     # Detect prediction score drift directly in Snowflake by comparing the earliest scored
     # cohort (baseline) against the most recent scored cohort up to replay_date.
