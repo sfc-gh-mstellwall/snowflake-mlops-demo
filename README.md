@@ -52,7 +52,7 @@ The repository showcases the seven-stage MLOps loop across four Snowflake Worksp
 |---|---|---|
 | `notebooks/01_credit_default_exploration.ipynb` | **1. Explore** | Source contract checks (`%%sql`), Snowpark DataFrame API key/grain/null verification, 365-day lookback coverage, and 90-day delayed label finality (`FINALISED` vs. `PENDING`). |
 | `notebooks/02_credit_default_feature_engineering.ipynb` | **2. Prepare (Feature Store)** | Feature Store (`Entity("CREDIT_ACCOUNT")`, 3 tiled `FeatureView`s + 3 Snowpark-derived `FeatureView`s registered as `V01` in `DEV_FEATURE_STORE`), raw-vs-derived sample spot checks, and point-in-time retrieval verification (`fs.retrieve_feature_values()`). |
-| `notebooks/03_credit_default_model_experiment.ipynb` | **2. Prepare (Datasets) → 3. Train & Screen (DEV)** | Feature Store discovery (`fs.list_entities()`, `fs.list_feature_views()`), feature selection, 90-day finality embargo spines, immutable `fs.generate_dataset()` (`CREDIT_DEVELOPMENT`, `CREDIT_VALIDATION`) with upstream lineage, `ExperimentTracking` runs (`LogisticRegression`, `HistGradientBoostingClassifier`, sequential `Tuner` HPO trials), presenter holdout gate, refit on `CREDIT_REFIT`, evaluation on `CREDIT_HELD_OUT`, and `Model Registry` logging. |
+| `notebooks/03_credit_default_model_experiment.ipynb` | **2. Prepare (Datasets) → 3. Train & Screen (DEV)** | Feature Store discovery (`fs.list_entities()`, `fs.list_feature_views()`), feature selection, 90-day finality embargo spines, immutable `fs.generate_dataset()` (`CREDIT_DEVELOPMENT`, `CREDIT_VALIDATION`) with upstream lineage, `ExperimentTracking` runs (one `HistGradientBoostingClassifier` baseline and sequential `Tuner` HPO trials), best-run selection, frozen held-out gates, refit on `CREDIT_REFIT`, evaluation on `CREDIT_HELD_OUT`, and `Model Registry` logging. |
 | `notebooks/04_credit_default_release_serving_and_monitoring.ipynb` | **4. Review & Approve → 5. Serve → 6. Monitor → 7. Improve** | Release recording (`SOURCE_RELEASE`, `ENVIRONMENT_DEPLOYMENT`), unattended candidate creation in `Pre-Prod` (`TEST`) and `PROD` (`PIPELINE_ATTEMPT`), fail-closed owner approval (`PROMOTION_DECISION`), `ACTIVATE_SERVING` for **Warehouse Batch** (`SET ALIAS = PRODUCTION`) and **Online Gateway** (`SHADOW` vs. `SPLIT`), delayed 90-day outcome replay (`V_PREDICTION_OUTCOME_MATURITY`), and full-path rollback (`RECOVER_SERVING`). |
 
 ## Repository structure
@@ -167,14 +167,11 @@ Then open `notebooks/03_credit_default_model_experiment.ipynb`. This notebook st
 - Discover registered Entities and Feature Views (`fs.list_entities()`, `fs.list_feature_views()`) and inspect their documented feature catalog in `DEV_FEATURE_STORE`.
 - Select the six `V01` Feature Views and 41 predictor columns (`numeric_features` and `categorical_features`).
 - Inspect `RAW.AVAILABLE_GROUND_TRUTH` finality timing, construct embargoed development and temporal-validation spines (`OUTCOME_FINALITY_DATE < cutoff`), and generate immutable point-in-time `CREDIT_DEVELOPMENT` and `CREDIT_VALIDATION` Datasets via `fs.generate_dataset()` with upstream Feature View lineage.
-- Establish an unfitted prevalence reference.
-- Fit a logistic candidate, inspect coefficients and calibration, then test a non-linear candidate.
-- Compare monthly review capacity, segment support, and bounded permutation importance.
-- Run a small HPO experiment only after recording what was learned from the initial models.
-- Manually select a candidate and record the rationale before enabling the held-out section.
-- Materialise refit and held-out Datasets only after the manual gate, then refit once, inspect held-out evidence, record a conclusion, and log the final experimental model.
+- Train one `HistGradientBoostingClassifier` baseline in a tracked Experiment run and log it to the Model Registry.
+- Run four tracked HPO trials with the Snowflake `Tuner` and select the run with the highest validation average precision.
+- Freeze the screening gates, materialise `CREDIT_REFIT` and `CREDIT_HELD_OUT`, refit the selected candidate once, evaluate it on the held-out period, record the conclusion, and inspect lineage.
 
-Every model fit is covered by a context-managed Experiment run, and every successful fitted candidate is logged before that run ends. The refit and conclusion runs are separate closed runs. Registry signature inference uses a Dataset-backed Snowpark DataFrame so source lineage can be preserved. HPO runs four sequential trials per family by default in the notebook; this is an explicit interactive budget, not a production tuning policy.
+Every model fit is covered by a context-managed Experiment run, and every successful fitted candidate is logged before that run ends. The refit and conclusion runs are separate closed runs. Registry signature inference uses a Dataset-backed Snowpark DataFrame so source lineage can be preserved. The four-trial HPO budget is an interactive demo choice, not a production tuning policy.
 
 `project.yaml` is used only as the platform hand-off for Snowflake object names and generated-data settings such as the simulated as-of date. Feature versions, temporal cutoffs, model and Experiment names, model parameters, HPO budget, and evaluation gates are introduced in the notebooks at the point where the investigation motivates them. Freezing those choices into a release contract is a later increment, not something the interactive notebooks invent automatically.
 
