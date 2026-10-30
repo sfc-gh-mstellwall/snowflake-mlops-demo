@@ -153,8 +153,13 @@ def run_warehouse_batch_scoring(
         warehouse_name=binding["warehouse"],
     )
 
-    # Single point of definition for the scoring population view and prediction ledger table.
-    scoring_population = session.table(f"{database}.{raw_schema}.SCORING_POPULATION")
+    # Single point of definition for the scoring spine and prediction ledger table.
+    # SCORING_POPULATION only exposes still-PENDING cohorts, so replaying historical
+    # (pre-/post-drift) months reads the observation keys alone from ACCOUNT_OBSERVATION;
+    # no outcome columns are selected at prediction time.
+    scoring_population = session.table(f"{database}.{raw_schema}.ACCOUNT_OBSERVATION").select(
+        "ACCOUNT_ID", "OBSERVATION_DATE"
+    )
     prediction_table_fqn = f"{database}.{control_schema}.PREDICTION_RECORD"
     prediction_records = session.table(prediction_table_fqn)
 
@@ -163,6 +168,13 @@ def run_warehouse_batch_scoring(
             F.col("OBSERVATION_DATE") == F.to_date(F.lit(observation_date))
         )
         .with_column("OBSERVATION_TS", F.to_timestamp_ntz("OBSERVATION_DATE"))
+        # SCORING_POPULATION is keyed by (ACCOUNT_ID, OBSERVATION_DATE); derive a stable id from it.
+        .with_column(
+            "OBSERVATION_ID",
+            F.concat(
+                F.col("ACCOUNT_ID"), F.lit("_"), F.to_char(F.col("OBSERVATION_DATE"), "YYYYMMDD")
+            ),
+        )
         .select("OBSERVATION_ID", "ACCOUNT_ID", "OBSERVATION_DATE", "OBSERVATION_TS")
     )
     scoring_features_df = fs.retrieve_feature_values(

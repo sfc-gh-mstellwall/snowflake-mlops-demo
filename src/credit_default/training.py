@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib.metadata
 import json
+import sys
 import uuid
 from typing import Any, Mapping
 
@@ -144,7 +146,14 @@ def train_and_register_candidate(
     validation_sp_df = datasets["validation"].read.to_snowpark_dataframe(only_feature_cols=False)
 
     validate_feature_columns(refit_sp_df.columns, contract)
-    training_sample = refit_sp_df.select(feature_columns).limit(50)
+    # Signature inference needs non-null values in every column; sparse features such as
+    # MONTHS_SINCE_LIMIT_CHANGE are mostly null, so prefer the most complete rows.
+    null_count = sum(F.iff(F.col(c).is_null(), 1, 0) for c in feature_columns)
+    training_sample = (
+        refit_sp_df.select(feature_columns)
+        .sort(null_count, *feature_columns)
+        .limit(50)
+    )
 
     # Materialize only the modelling columns required at the local scikit-learn fit/score boundary.
     refit_pdf = refit_sp_df.select(feature_columns + [target_col]).to_pandas()
@@ -170,7 +179,20 @@ def train_and_register_candidate(
         database_name=database_name,
         schema_name=binding["experiment_schema"],
     )
-    exp.set_experiment(contract["model"]["experiment_name"])
+    # Pin the runtime packages and Python version (as Notebook 03 does) so the WAREHOUSE
+    # target platform does not depend on server-side dependency resolution.
+    model_dependencies = [
+        f"{name}=={importlib.metadata.version(name)}"
+        for name in ["scikit-learn", "numpy", "pandas", "scipy"]
+    ]
+    python_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    # ExperimentTracking is a per-session singleton: bind the schema on set_experiment so a
+    # second environment in the same session does not log (and register) into the first one.
+    exp.set_experiment(
+        contract["model"]["experiment_name"],
+        database_name=database_name,
+        schema_name=binding["experiment_schema"],
+    )
     with exp.start_run(run_id):
         exp.log_params(
             {
@@ -197,6 +219,8 @@ def train_and_register_candidate(
             sample_input_data=training_sample,
             task=ml_task.Task.TABULAR_BINARY_CLASSIFICATION,
             target_platforms=list(contract["model"]["target_platforms"]),
+            conda_dependencies=model_dependencies,
+            python_version=python_version,
             options={
                 "relax_version": False,
                 "target_methods": ["predict", "predict_proba"],
