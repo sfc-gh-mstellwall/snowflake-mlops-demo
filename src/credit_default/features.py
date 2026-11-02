@@ -63,7 +63,6 @@ def ensure_environment_feature_store(
     daily = session.table(f"{database_name}.{raw_schema}.FACT_ACCOUNT_DAILY_SNAPSHOT")
     payments = session.table(f"{database_name}.{raw_schema}.FACT_PAYMENT")
     contacts = session.table(f"{database_name}.{raw_schema}.FACT_CUSTOMER_CONTACT")
-    observations = session.table(f"{database_name}.{raw_schema}.ACCOUNT_OBSERVATION")
 
     # 1. Account profile Feature View
     limit_events = (
@@ -247,9 +246,9 @@ def ensure_environment_feature_store(
     )
 
     # 3. Payment and contact Feature Views + payment-derived balance features
-    observation_dates = (
-        observations.select("ACCOUNT_ID", F.col("OBSERVATION_DATE").alias("FEATURE_DATE"))
-        .distinct()
+    # Same month-end feature dates as balance_base_df; feature engineering never reads labels.
+    observation_dates = balance_base_df.select(
+        "ACCOUNT_ID", F.to_date(F.col("BALANCE_TS")).alias("FEATURE_DATE")
     )
     prior_servicing = daily.select(
         "ACCOUNT_ID",
